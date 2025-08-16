@@ -69,7 +69,7 @@ contract PortfolioFactory {
     function createUserPortfolio() external {
         require(userContracts[msg.sender] == address(0), "EXISTS");
         
-        UserPortfolio userPortfolio = new UserPortfolio(address(USDC), msg.sender);
+        UserPortfolio userPortfolio = new UserPortfolio(address(USDC), address(0), msg.sender);
         userContracts[msg.sender] = address(userPortfolio);
         
         emit UserPortfolioCreated(msg.sender, address(userPortfolio));
@@ -86,6 +86,7 @@ contract UserPortfolio is ReentrancyGuard {
     using SafeERC20 for IERC20;
 
     IERC20 public immutable USDC;
+    IERC20 public immutable WETH;
     address public immutable user;
     uint8 public immutable usdcDec;
     uint16 public constant MAX_BPS = 10_000;
@@ -97,9 +98,9 @@ contract UserPortfolio is ReentrancyGuard {
     // Struct for each portfolio asset
     struct PortfolioAsset {
         uint256 assetId;        // 0=USDC, 1=WETH, 2=BTC, etc.
+        address tokenAddress;   // Token address (ERC-20)
         uint256 units;          // Actual units (USDC units, WETH units, etc.)
         uint16 bps;             // Target allocation
-        uint256 lastPrice;      // Price when last updated (for rebalancing)
         uint256 lastEdited;     // Timestamp of last edit (for rebalancing)
     }
 
@@ -123,10 +124,11 @@ contract UserPortfolio is ReentrancyGuard {
     // TODO: confirm this is OK in the frontend, i.e. we will always be logged into that user account when we call it.
     modifier onlyUser() { require(msg.sender == user, "ONLY_USER"); _; }
 
-    constructor(address _usdc, address _user) {
+    constructor(address _usdc, address _weth, address _user) {
         USDC = IERC20(_usdc);
         user = _user;
         usdcDec = IERC20(_usdc).decimals();
+        WETH = IERC20(_weth);
         
         // Initialize asset metadata
         assetNames[0] = "USDC";
@@ -173,6 +175,7 @@ contract UserPortfolio is ReentrancyGuard {
                 
                 portfolio.push(PortfolioAsset({
                     assetId: _desiredAllocation[i].assetId,
+                    tokenAddress: _desiredAllocation[i].tokenAddress,
                     units: assetUnits,
                     bps: _desiredAllocation[i].bps,
                     lastPrice: _getAssetPrice(_desiredAllocation[i].assetId),
@@ -311,19 +314,53 @@ contract UserPortfolio is ReentrancyGuard {
         revert("NOT_IMPLEMENTED_REAL_SWAP");
         // emit SwapAllAssetsToUsdcRequested(user);
     }
-    /// Future: rebalance function (simplified) - just update prices for now (inline, not real, detached from reality/oracle)
-    // TODO: REPLACE WITH REAL REBALANCING LOGIC
+    /// Rebalance the Portfolio
     function rebalancePortfolio() external onlyUser {
-        // Just update prices for now (inline)
-        for (uint i = 0; i < portfolio.length; i++) {
-            portfolio[i].lastPrice = _getAssetPrice(portfolio[i].assetId);
-            portfolio[i].lastEdited = block.timestamp;
+        PortfolioAsset[] storage portf = portfolio;
+        require(portf.length > 0, "no target");
+        require(uniswapRouter != address(0), "NO_ROUTER"); // Is this needed?
+
+        /// Convert all Assets into WETH
+        for (uint i = 0; i < portf.length; i++) {
+            address token = portf[i].tokenAddress;
+            if (token == address(0) || token == address(WETH)) continue; // do I need the check for address(0)?
+            uint256 bal = IERC20(token).balanceOf(address(this));
+            if (bal == 0) continue;
+
+            SafeERC20.safeApprove(IERC20(token), uniswapRouter, bal);
+            // Note: Actual swap implementation would go here
+            // For now, this is a placeholder - implement based on your router interface
+            // Example: router.swapExactTokensForTokens(token, address(WETH), bal, address(this));
         }
+ 
+        // Now rebalance from WETH to target allocation
+        uint256 wethBalance = WETH.balanceOf(address(this));
+        uint256 spentWeth = 0;
+        
+        for (uint i = 0; i < portf.length; i++) {
+            address token = portf[i].tokenAddress;
+            uint16 bps = portf[i].bps;
+
+            if (token == address(WETH)) continue;
+
+            uint256 targetWethAmt = (wethBalance * bps) / MAX_BPS;
+            if (targetWethAmt == 0) continue;
+
+            // Spend WETH for this slice
+            spentWeth += targetWethAmt;
+
+            SafeERC20.safeApprove(WETH, uniswapRouter, targetWethAmt);
+                // Note: Actual swap implementation would go here
+                // uint256 out = router.swapExact(address(WETH), token, targetWethAmt, address(this));
+        }
+
+        // Update portfolio with new allocations
+        for (uint i = 0; i < portf.length; i++) {
+            portf[i].lastEdited = block.timestamp;
+        }
+
         emit PortfolioRebalanced(user);
     }
-
-
-
 
 }
 
