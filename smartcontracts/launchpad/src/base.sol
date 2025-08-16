@@ -97,7 +97,6 @@ contract UserPortfolio is ReentrancyGuard {
 
     // Struct for each portfolio asset
     struct PortfolioAsset {
-        uint256 assetId;        // 0=USDC, 1=WETH, 2=BTC, etc.
         address tokenAddress;   // Token address (ERC-20)
         uint256 units;          // Actual units (USDC units, WETH units, etc.)
         uint16 bps;             // Target allocation
@@ -108,9 +107,8 @@ contract UserPortfolio is ReentrancyGuard {
     PortfolioAsset[] public portfolio;
     
     // Asset metadata for future extensibility
-    mapping(uint256 => string) public assetNames;
-    mapping(uint256 => uint8) public assetDecimals;
-    mapping(uint256 => bool) public isAssetSupported; // guard unsupported assets
+    mapping(address => string) public assetNames;
+    mapping(address => uint8) public assetDecimals;
 
     // Events
     event Deposit(address indexed user, uint256 usdcIn);
@@ -131,12 +129,10 @@ contract UserPortfolio is ReentrancyGuard {
         usdcDec = IERC20(_usdc).decimals();
         
         // Initialize asset metadata
-        assetNames[0] = "USDC";
-        assetNames[1] = "WETH";
-        assetDecimals[0] = 6;
-        assetDecimals[1] = 18;
-        isAssetSupported[0] = true;
-        isAssetSupported[1] = true;
+        assetNames[address(USDC)] = "USDC";
+        assetNames[address(WETH)] = "WETH";
+        assetDecimals[address(USDC)] = 6;
+        assetDecimals[address(WETH)] = 18;
     }
 
     /* ---------------- Core Functions ---------------- */
@@ -155,7 +151,6 @@ contract UserPortfolio is ReentrancyGuard {
         // Check allocation adds up to 100%
         uint256 totalBps = 0;
         for (uint i = 0; i < _desiredAllocation.length; i++) {
-            require(isAssetSupported[_desiredAllocation[i].assetId], "ASSET_UNSUPPORTED");
             require(_desiredAllocation[i].bps > 0, "ZERO_BPS");
             totalBps += _desiredAllocation[i].bps;
         }
@@ -171,10 +166,9 @@ contract UserPortfolio is ReentrancyGuard {
         for (uint i = 0; i < _desiredAllocation.length; i++) {
             uint256 usdcAmount = (usdcIn * _desiredAllocation[i].bps) / MAX_BPS;
             if (usdcAmount > 0) {
-                uint256 assetUnits = _quoteUsdcToAssetUnits(_desiredAllocation[i].assetId, usdcAmount);
+                uint256 assetUnits = _quoteUsdcToAssetUnits(_desiredAllocation[i].tokenAddress, usdcAmount);
                 
                 portfolio.push(PortfolioAsset({
-                    assetId: _desiredAllocation[i].assetId,
                     tokenAddress: _desiredAllocation[i].tokenAddress,
                     units: assetUnits,
                     bps: _desiredAllocation[i].bps,
@@ -212,7 +206,7 @@ contract UserPortfolio is ReentrancyGuard {
     function quotePortfolioValueUsdc() public view returns (uint256) {
         uint256 totalClaimable;
         for (uint i = 0; i < portfolio.length; i++) {
-            totalClaimable += _quoteAssetUnitsToUsdc(portfolio[i].assetId, portfolio[i].units);
+            totalClaimable += _quoteAssetUnitsToUsdc(portfolio[i].tokenAddress, portfolio[i].units);
         }
         return totalClaimable;
     }
@@ -232,7 +226,7 @@ contract UserPortfolio is ReentrancyGuard {
         uint256 total = quotePortfolioValueUsdc();
         if (total == 0) return bps;
         for (uint i = 0; i < portfolio.length; i++) {
-            uint256 valUsdc = _quoteAssetUnitsToUsdc(portfolio[i].assetId, portfolio[i].units);
+            uint256 valUsdc = _quoteAssetUnitsToUsdc(portfolio[i].tokenAddress, portfolio[i].units);
             bps[i] = uint16((valUsdc * MAX_BPS) / total);
         }
     }
@@ -248,9 +242,9 @@ contract UserPortfolio is ReentrancyGuard {
     }
 
     /// Check individual asset balances
-    function getAssetBalance(uint256 assetId) external view returns (uint256) {
+    function getAssetBalance(address token) external view returns (uint256) {
         for (uint i = 0; i < portfolio.length; i++) {
-            if (portfolio[i].assetId == assetId) {
+            if (portfolio[i].tokenAddress == token) {
                 return portfolio[i].units;
             }
         }
@@ -266,33 +260,31 @@ contract UserPortfolio is ReentrancyGuard {
 
     // Simple price function - just USDC and WETH for now
     // TODO: REPLACE WITH REAL ORACLE
-    function _getAssetPrice(uint256 assetId) internal view returns (uint256) {
-        if (assetId == 0) return 1_000_000;        // USDC = $1.00 (6 decimals)
-        if (assetId == 1) return 3000_000_000_00;  // WETH = $3000.00 (8 decimals)
+    function _getAssetPrice(address token) internal view returns (uint256) {
+        if (token == address(USDC)) return 1_000_000;        // USDC = $1.00 (6 decimals)
+        if (token == address(WETH)) return 3000_000_000_00;  // WETH = $3000.00 (8 decimals)
         revert("ASSET_UNSUPPORTED");
     }
 
     // Helper function for future Uniswap integration (QUOTE ONLY, no state changes)
     // TODO: REPLACE WITH REAL UNISWAP SWAPS (See below func) when implementing actual redemption swaps. This currently only computes units from USDC using price.
-    function _quoteUsdcToAssetUnits(uint256 assetId, uint256 usdcAmount) internal view returns (uint256) {
-        require(isAssetSupported[assetId], "ASSET_UNSUPPORTED");
-        if (assetId == 0) return usdcAmount; // USDC stays as USDC
+    function _quoteUsdcToAssetUnits(address token, uint256 usdcAmount) internal view returns (uint256) {
+        if (token == address(USDC)) return usdcAmount; // USDC stays as USDC
         
         // units = usdcAmount * 10^(aDec + PRICE_DECIMALS) / (price * 10^usdcDec)
-        uint256 price = _getAssetPrice(assetId);                  // 8 decimals
-        uint256 aDec = assetDecimals[assetId];                    // e.g., 18
+        uint256 price = _getAssetPrice(token);                  // 8 decimals
+        uint256 aDec = assetDecimals[token];                    // e.g., 18
         return (usdcAmount * (10 ** (aDec + PRICE_DECIMALS))) / (price * (10 ** usdcDec));
     }
 
     /// Quote conversion of asset units back to USDC terms (no state changes)
     // TODO: TEMPORARY, WITH REAL UNISWAP SWAPS (See below func) when implementing actual redemption swaps
-    function _quoteAssetUnitsToUsdc(uint256 assetId, uint256 assetUnits) internal view returns (uint256) {
-        require(isAssetSupported[assetId], "ASSET_UNSUPPORTED");
-        if (assetId == 0) return assetUnits; // USDC stays as USDC
+    function _quoteAssetUnitsToUsdc(address token, uint256 assetUnits) internal view returns (uint256) {
+        if (token == address(USDC)) return assetUnits; // USDC stays as USDC
         
         // usdc = assetUnits * price * 10^usdcDec / 10^(aDec + PRICE_DECIMALS), since price decimals diff for each curr
-        uint256 price = _getAssetPrice(assetId);                  // 8 decimals
-        uint256 aDec = assetDecimals[assetId];                    // e.g., 18
+        uint256 price = _getAssetPrice(token);                  // 8 decimals
+        uint256 aDec = assetDecimals[token];                    // e.g., 18
         return (assetUnits * price * (10 ** usdcDec)) / (10 ** (aDec + PRICE_DECIMALS));
     }
 
