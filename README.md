@@ -6,7 +6,7 @@ Onboarding noobs to risk-conscious crypto investing
 - [ ] ...
 
 ## Addons
- -[ ] add more tokens
+- [ ] add more tokens
 
 <h4 align="center">
   <a href="https://docs.scaffoldeth.io">Documentation</a> |
