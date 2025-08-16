@@ -332,7 +332,6 @@ contract UserPortfolio is ReentrancyGuard {
             // Example: router.swapExactTokensForTokens(token, address(WETH), bal, address(this));
         }
  
-        // Now rebalance from USDC to target allocation
         uint256 usdcBalance = USDC.balanceOf(address(this));
         
         for (uint i = 0; i < portf.length; i++) {
