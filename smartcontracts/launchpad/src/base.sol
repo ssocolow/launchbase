@@ -326,24 +326,14 @@ contract UserPortfolio is ReentrancyGuard {
             uint256 bal = IERC20(token).balanceOf(address(this));
             if (bal == 0) continue;
 
-            // Approve router to spend tokens
             SafeERC20.safeApprove(IERC20(token), uniswapRouter, bal);
-            
-            // Note: Actual swap implementation would require proper Uniswap router interface
-            // For now, this is a placeholder - you'll need to implement the actual swap logic
-            // based on your specific Uniswap router version (V2, V3, etc.)
-            
-            // Example for Uniswap V2 (you'll need to adjust based on your router):
-            // bytes memory path = abi.encodePacked(token, address(USDC));
-            // uint256[] memory amounts = IUniswapV2Router02(uniswapRouter).swapExactTokensForTokens(
-            //     bal, 0, path, address(this), block.timestamp
-            // );
-            // uint256 out = amounts[amounts.length - 1];
+            // Note: Actual swap implementation would go here
+            // For now, this is a placeholder - implement based on your router interface
+            // Example: router.swapExactTokensForTokens(token, address(WETH), bal, address(this));
         }
  
         // Now rebalance from USDC to target allocation
         uint256 usdcBalance = USDC.balanceOf(address(this));
-        uint256 spentUsdc = 0;
         
         for (uint i = 0; i < portf.length; i++) {
             address token = portf[i].tokenAddress;
@@ -354,15 +344,11 @@ contract UserPortfolio is ReentrancyGuard {
             uint256 targetUsdcAmt = (usdcBalance * bps) / MAX_BPS;
             if (targetUsdcAmt == 0) continue;
 
-            // Spend USDC for this slice
-            spentUsdc += targetUsdcAmt;
-
             SafeERC20.safeApprove(USDC, uniswapRouter, targetUsdcAmt);
             // Note: Actual swap implementation would go here
             // uint256 out = router.swapExact(address(USDC), token, targetUsdcAmt, address(this));
         }
 
-        // Update portfolio with new allocations
         for (uint i = 0; i < portf.length; i++) {
             portf[i].lastEdited = block.timestamp;
         }
