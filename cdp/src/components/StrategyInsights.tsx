@@ -35,7 +35,7 @@ export default function StrategyInsights({ ethPercentage, usdcPercentage, riskLe
     {
       id: "eth",
       title: "ETH Strategy",
-      icon: "https://cryptologos.cc/logos/ethereum-eth-logo.png",
+      icon: "https://assets.coingecko.com/coins/images/279/small/ethereum.png",
       color: "blue",
       hoverColor: "bg-blue-50",
       insights: [
@@ -48,7 +48,7 @@ export default function StrategyInsights({ ethPercentage, usdcPercentage, riskLe
     {
       id: "usdc",
       title: "USDC Strategy", 
-      icon: "https://cryptologos.cc/logos/usd-coin-usdc-logo.png",
+      icon: "https://assets.coingecko.com/coins/images/6319/small/USD_Coin_icon.png",
       color: "emerald",
       hoverColor: "bg-emerald-50",
       insights: [
