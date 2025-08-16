@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
+import "@chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol";
+
 /**
  * RiskSliderSynthetic
  * - Accepts REAL USDC (pass address at deploy)
@@ -53,28 +55,90 @@ abstract contract ReentrancyGuard {
     }
 }
 
+// Minimal Uniswap V3 router interface for exactInput
+interface IUniswapV3Router {
+    struct ExactInputParams {
+        bytes path;               // encoded path: tokenIn, fee, tokenOut, ... ending in USDC
+        address recipient;        // recipient of output tokens
+        uint256 deadline;         // unix timestamp deadline
+        uint256 amountIn;         // amount of tokenIn to swap
+        uint256 amountOutMinimum; // slippage control
+    }
+
+    function exactInput(ExactInputParams calldata params) external payable returns (uint256 amountOut);
+}
+
 // Factory contract - deploys individual user contracts
 contract PortfolioFactory {
     IERC20 public immutable USDC;
+    address public immutable usdcPriceFeed;
+    address public immutable wethPriceFeed;
+    address public immutable defaultUniswapRouter;
+    address public owner;
     mapping(address => address) public userContracts;
+    mapping(uint256 => address) public defaultAssetToken;
+    mapping(uint256 => bytes) public defaultAssetPath;
+    uint256[] public configuredAssetIds;
+    mapping(uint256 => bool) private isConfiguredAssetId;
     
     event UserPortfolioCreated(address indexed user, address contractAddress);
+    event DefaultAssetConfigSet(uint256 indexed assetId, address token, bytes path);
     
-    constructor(address _usdc) {
+    modifier onlyOwner() { require(msg.sender == owner, "ONLY_OWNER"); _; }
+    
+    constructor(address _usdc, address _usdcPriceFeed, address _wethPriceFeed, address _uniswapRouter) {
         require(_usdc != address(0), "BAD_USDC");
+        require(_uniswapRouter != address(0), "BAD_ROUTER");
         USDC = IERC20(_usdc);
+        usdcPriceFeed = _usdcPriceFeed;
+        wethPriceFeed = _wethPriceFeed;
+        defaultUniswapRouter = _uniswapRouter;
+        owner = msg.sender;
     }
     
     /// Create a new portfolio for the calling user
     function createUserPortfolio() external {
         require(userContracts[msg.sender] == address(0), "EXISTS");
         
-        UserPortfolio userPortfolio = new UserPortfolio(address(USDC), msg.sender);
+        // Prepare defaults arrays from factory configuration
+        uint256 cfgLen = configuredAssetIds.length;
+        uint256[] memory assetIds = new uint256[](cfgLen);
+        address[] memory tokens = new address[](cfgLen);
+        bytes[] memory paths = new bytes[](cfgLen);
+        for (uint256 i = 0; i < cfgLen; i++) {
+            uint256 aId = configuredAssetIds[i];
+            assetIds[i] = aId;
+            tokens[i] = defaultAssetToken[aId];
+            paths[i] = defaultAssetPath[aId];
+        }
+
+        UserPortfolio userPortfolio = new UserPortfolio(
+            address(USDC),
+            msg.sender,
+            usdcPriceFeed,
+            wethPriceFeed,
+            defaultUniswapRouter,
+            assetIds,
+            tokens,
+            paths
+        );
         userContracts[msg.sender] = address(userPortfolio);
         
         emit UserPortfolioCreated(msg.sender, address(userPortfolio));
     }
     
+    /// Owner can set default token and path for an assetId (used to pre-seed user portfolios)
+    function setDefaultAssetConfig(uint256 assetId, address token, bytes calldata path) external onlyOwner {
+        require(token != address(0), "BAD_TOKEN");
+        defaultAssetToken[assetId] = token;
+        defaultAssetPath[assetId] = path; // allow empty path; user contract may skip if empty
+        if (!isConfiguredAssetId[assetId]) {
+            isConfiguredAssetId[assetId] = true;
+            configuredAssetIds.push(assetId);
+        }
+        emit DefaultAssetConfigSet(assetId, token, path);
+    }
+
     /// Get user's portfolio address
     function getUserPortfolio(address user) external view returns (address) {
         return userContracts[user];
@@ -94,6 +158,9 @@ contract UserPortfolio is ReentrancyGuard {
     // External DEX router (for future real swaps)
     address public uniswapRouter; // TODO: set to real router when implementing swaps
 
+    // Oracle price feeds
+    mapping(uint256 => AggregatorV3Interface) public priceFeeds;
+
     // Struct for each portfolio asset
     struct PortfolioAsset {
         uint256 assetId;        // 0=USDC, 1=WETH, 2=BTC, etc.
@@ -110,6 +177,8 @@ contract UserPortfolio is ReentrancyGuard {
     mapping(uint256 => string) public assetNames;
     mapping(uint256 => uint8) public assetDecimals;
     mapping(uint256 => bool) public isAssetSupported; // guard unsupported assets
+    mapping(uint256 => address) public assetTokenAddresses; // ERC20 token addresses for assets (required for real swaps)
+    mapping(uint256 => bytes) public assetDefaultV3Path; // Default Uniswap V3 path (encoded) for assetId -> USDC
 
     // Events
     event Deposit(address indexed user, uint256 usdcIn);
@@ -123,7 +192,16 @@ contract UserPortfolio is ReentrancyGuard {
     // TODO: confirm this is OK in the frontend, i.e. we will always be logged into that user account when we call it.
     modifier onlyUser() { require(msg.sender == user, "ONLY_USER"); _; }
 
-    constructor(address _usdc, address _user) {
+    constructor(
+        address _usdc,
+        address _user,
+        address _usdcPriceFeed,
+        address _wethPriceFeed,
+        address _router,
+        uint256[] memory _assetIds,
+        address[] memory _tokenAddrs,
+        bytes[] memory _defaultPaths
+    ) {
         USDC = IERC20(_usdc);
         user = _user;
         usdcDec = IERC20(_usdc).decimals();
@@ -135,6 +213,37 @@ contract UserPortfolio is ReentrancyGuard {
         assetDecimals[1] = 18;
         isAssetSupported[0] = true;
         isAssetSupported[1] = true;
+
+        // Set price feeds
+        require(_usdcPriceFeed != address(0), "BAD_USDC_FEED");
+        require(_wethPriceFeed != address(0), "BAD_WETH_FEED");
+        priceFeeds[0] = AggregatorV3Interface(_usdcPriceFeed); // USDC
+        priceFeeds[1] = AggregatorV3Interface(_wethPriceFeed); // WETH
+
+        // Set Uniswap router
+        require(_router != address(0), "BAD_ROUTER");
+        uniswapRouter = _router;
+
+        // Seed default token addresses and paths
+        require(_assetIds.length == _tokenAddrs.length, "LEN_MISMATCH_TOKENS");
+        require(_assetIds.length == _defaultPaths.length, "LEN_MISMATCH_PATHS");
+        for (uint256 i = 0; i < _assetIds.length; i++) {
+            uint256 aId = _assetIds[i];
+            address t = _tokenAddrs[i];
+            bytes memory p = _defaultPaths[i];
+            if (aId == 0) { // Skip USDC path, but token address should be USDC token itself
+                if (t != address(0)) {
+                    assetTokenAddresses[aId] = t;
+                }
+                continue;
+            }
+            if (t != address(0)) {
+                assetTokenAddresses[aId] = t;
+            }
+            if (p.length > 0) {
+                assetDefaultV3Path[aId] = p;
+            }
+        }
     }
 
     /* ---------------- Core Functions ---------------- */
@@ -144,6 +253,8 @@ contract UserPortfolio is ReentrancyGuard {
         require(router != address(0), "BAD_ROUTER");
         uniswapRouter = router;
     }
+
+
 
     /// Deposit USDC and allocate according to user's desired mix
     function depositUsdc(uint256 usdcIn, PortfolioAsset[] memory _desiredAllocation) external onlyUser nonReentrant {
@@ -262,12 +373,21 @@ contract UserPortfolio is ReentrancyGuard {
 
     /* ---------------- Internal Helpers ---------------- */
 
-    // Simple price function - just USDC and WETH for now
-    // TODO: REPLACE WITH REAL ORACLE
     function _getAssetPrice(uint256 assetId) internal view returns (uint256) {
-        if (assetId == 0) return 1_000_000;        // USDC = $1.00 (6 decimals)
-        if (assetId == 1) return 3000_000_000_00;  // WETH = $3000.00 (8 decimals)
-        revert("ASSET_UNSUPPORTED");
+        AggregatorV3Interface priceFeed = priceFeeds[assetId];
+        require(address(priceFeed) != address(0), "ORACLE_NOT_SET");
+
+        (, int256 price, , , ) = priceFeed.latestRoundData();
+        require(price > 0, "BAD_PRICE");
+
+        uint8 oracleDecimals = priceFeed.decimals();
+        
+        // Adjust price to our internal PRICE_DECIMALS (8)
+        if (oracleDecimals > PRICE_DECIMALS) {
+            return uint256(price) / (10**(oracleDecimals - PRICE_DECIMALS));
+        } else {
+            return uint256(price) * (10**(PRICE_DECIMALS - oracleDecimals));
+        }
     }
 
     // Helper function for future Uniswap integration (QUOTE ONLY, no state changes)
@@ -306,10 +426,100 @@ contract UserPortfolio is ReentrancyGuard {
 
     /// All assets -> USDC via Uniswap (stub; will perform real swaps later)
     // TODO: implement real swaps using router when non-virtual assets are held
-    function swapAllAssetsToUsdcViaUniswap(bytes[] calldata /*paths*/) external onlyUser nonReentrant {
+    function swapAllAssetsToUsdcViaUniswap(bytes[] calldata paths) external onlyUser nonReentrant {
         require(uniswapRouter != address(0), "NO_ROUTER");
-        revert("NOT_IMPLEMENTED_REAL_SWAP");
-        // emit SwapAllAssetsToUsdcRequested(user);
+        require(portfolio.length > 0, "NO_PORTFOLIO");
+
+        _swapNonUsdcAssets(paths);
+
+        // After swaps, clear the portfolio and transfer all USDC to the user
+        delete portfolio;
+        uint256 usdcOut = USDC.balanceOf(address(this));
+        require(usdcOut > 0, "NO_USDC_OUT");
+        SafeERC20.safeTransfer(USDC, user, usdcOut);
+
+        emit SwapAllAssetsToUsdcRequested(user);
+        emit WithdrawAllUSDC(user, usdcOut);
+    }
+
+    /// Convenience: withdraw using stored default paths per asset
+    function withdrawAllAsUSDCWithDefaultPaths() external onlyUser nonReentrant {
+        require(uniswapRouter != address(0), "NO_ROUTER");
+        require(portfolio.length > 0, "NO_PORTFOLIO");
+
+        // Build paths array based on current portfolio order (excluding USDC)
+        uint256 nonUsdcCount = 0;
+        for (uint i = 0; i < portfolio.length; i++) {
+            if (portfolio[i].assetId != 0) {
+                nonUsdcCount++;
+            }
+        }
+        bytes[] memory paths = new bytes[](nonUsdcCount);
+        uint256 idx = 0;
+        for (uint i = 0; i < portfolio.length; i++) {
+            uint256 assetId = portfolio[i].assetId;
+            if (assetId == 0) continue;
+            bytes storage p = assetDefaultV3Path[assetId];
+            require(p.length > 0, "DEFAULT_PATH_NOT_SET");
+            paths[idx] = p;
+            idx++;
+        }
+
+        _swapNonUsdcAssets(paths, amountOutMinimums);
+
+        delete portfolio;
+        uint256 usdcOut = USDC.balanceOf(address(this));
+        require(usdcOut > 0, "NO_USDC_OUT");
+        SafeERC20.safeTransfer(USDC, user, usdcOut);
+
+        emit SwapAllAssetsToUsdcRequested(user);
+        emit WithdrawAllUSDC(user, usdcOut);
+    }
+
+    function _swapNonUsdcAssets(bytes[] memory paths, uint256[] memory amountOutMinimums) internal {
+        // Iterate non-USDC assets and swap their full balances to USDC
+        uint256 nonUsdcCount = 0;
+        for (uint i = 0; i < portfolio.length; i++) {
+            if (portfolio[i].assetId != 0) {
+                nonUsdcCount++;
+            }
+        }
+        require(paths.length == nonUsdcCount, "PATHS_MISMATCH");
+        require(amountOutMinimums.length == nonUsdcCount, "AMOUNT_OUT_MIN_MISMATCH");
+
+        uint256 pathIndex = 0;
+        for (uint i = 0; i < portfolio.length; i++) {
+            uint256 assetId = portfolio[i].assetId;
+            if (assetId == 0) {
+                continue; // Skip USDC
+            }
+
+            address tokenAddr = assetTokenAddresses[assetId];
+            require(tokenAddr != address(0), "TOKEN_ADDR_NOT_SET");
+
+            IERC20 token = IERC20(tokenAddr);
+            uint256 amountIn = token.balanceOf(address(this));
+            if (amountIn == 0) {
+                pathIndex++;
+                continue; // Nothing to swap for this asset
+            }
+
+            // Approve router to spend token
+            SafeERC20.safeApprove(token, uniswapRouter, 0);
+            SafeERC20.safeApprove(token, uniswapRouter, amountIn);
+
+            // Execute swap to USDC using provided V3-encoded path for this asset
+            IUniswapV3Router.ExactInputParams memory params = IUniswapV3Router.ExactInputParams({
+                path: paths[pathIndex],
+                recipient: address(this),
+                deadline: block.timestamp,
+                amountIn: amountIn,
+                amountOutMinimum: amountOutMinimums[pathIndex] // User inputted slippage protection
+            });
+
+            IUniswapV3Router(uniswapRouter).exactInput(params);
+            pathIndex++;
+        }
     }
     /// Future: rebalance function (simplified) - just update prices for now (inline, not real, detached from reality/oracle)
     // TODO: REPLACE WITH REAL REBALANCING LOGIC
@@ -322,12 +532,7 @@ contract UserPortfolio is ReentrancyGuard {
         emit PortfolioRebalanced(user);
     }
 
-
-
-
 }
-
-
 
 
 /*
