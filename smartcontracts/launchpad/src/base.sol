@@ -126,9 +126,9 @@ contract UserPortfolio is ReentrancyGuard {
 
     constructor(address _usdc, address _weth, address _user) {
         USDC = IERC20(_usdc);
+        WETH = IERC20(_weth);
         user = _user;
         usdcDec = IERC20(_usdc).decimals();
-        WETH = IERC20(_weth);
         
         // Initialize asset metadata
         assetNames[0] = "USDC";
@@ -178,7 +178,6 @@ contract UserPortfolio is ReentrancyGuard {
                     tokenAddress: _desiredAllocation[i].tokenAddress,
                     units: assetUnits,
                     bps: _desiredAllocation[i].bps,
-                    lastPrice: _getAssetPrice(_desiredAllocation[i].assetId),
                     lastEdited: block.timestamp
                 }));
             }
@@ -318,40 +317,49 @@ contract UserPortfolio is ReentrancyGuard {
     function rebalancePortfolio() external onlyUser {
         PortfolioAsset[] storage portf = portfolio;
         require(portf.length > 0, "no target");
-        require(uniswapRouter != address(0), "NO_ROUTER"); // Is this needed?
+        require(uniswapRouter != address(0), "NO_ROUTER"); // Router is needed for swaps
 
-        /// Convert all Assets into WETH
+        /// Convert all Assets into USDC
         for (uint i = 0; i < portf.length; i++) {
             address token = portf[i].tokenAddress;
-            if (token == address(0) || token == address(WETH)) continue; // do I need the check for address(0)?
+            if (token == address(0) || token == address(USDC)) continue; // Skip zero address and USDC itself
             uint256 bal = IERC20(token).balanceOf(address(this));
             if (bal == 0) continue;
 
+            // Approve router to spend tokens
             SafeERC20.safeApprove(IERC20(token), uniswapRouter, bal);
-            // Note: Actual swap implementation would go here
-            // For now, this is a placeholder - implement based on your router interface
-            // Example: router.swapExactTokensForTokens(token, address(WETH), bal, address(this));
+            
+            // Note: Actual swap implementation would require proper Uniswap router interface
+            // For now, this is a placeholder - you'll need to implement the actual swap logic
+            // based on your specific Uniswap router version (V2, V3, etc.)
+            
+            // Example for Uniswap V2 (you'll need to adjust based on your router):
+            // bytes memory path = abi.encodePacked(token, address(USDC));
+            // uint256[] memory amounts = IUniswapV2Router02(uniswapRouter).swapExactTokensForTokens(
+            //     bal, 0, path, address(this), block.timestamp
+            // );
+            // uint256 out = amounts[amounts.length - 1];
         }
  
-        // Now rebalance from WETH to target allocation
-        uint256 wethBalance = WETH.balanceOf(address(this));
-        uint256 spentWeth = 0;
+        // Now rebalance from USDC to target allocation
+        uint256 usdcBalance = USDC.balanceOf(address(this));
+        uint256 spentUsdc = 0;
         
         for (uint i = 0; i < portf.length; i++) {
             address token = portf[i].tokenAddress;
             uint16 bps = portf[i].bps;
 
-            if (token == address(WETH)) continue;
+            if (token == address(USDC)) continue;
 
-            uint256 targetWethAmt = (wethBalance * bps) / MAX_BPS;
-            if (targetWethAmt == 0) continue;
+            uint256 targetUsdcAmt = (usdcBalance * bps) / MAX_BPS;
+            if (targetUsdcAmt == 0) continue;
 
-            // Spend WETH for this slice
-            spentWeth += targetWethAmt;
+            // Spend USDC for this slice
+            spentUsdc += targetUsdcAmt;
 
-            SafeERC20.safeApprove(WETH, uniswapRouter, targetWethAmt);
-                // Note: Actual swap implementation would go here
-                // uint256 out = router.swapExact(address(WETH), token, targetWethAmt, address(this));
+            SafeERC20.safeApprove(USDC, uniswapRouter, targetUsdcAmt);
+            // Note: Actual swap implementation would go here
+            // uint256 out = router.swapExact(address(USDC), token, targetUsdcAmt, address(this));
         }
 
         // Update portfolio with new allocations
@@ -375,4 +383,5 @@ Assumptions
 - Sequential function call (no withdrawal during processing deposit)
 - Asset IDs, for now just USDC and WETH, but future easy to add more.
 - Each user gets their own contract (no shared pool)
+- Contract is denominated in USDC
 */
