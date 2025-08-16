@@ -1,7 +1,9 @@
 "use client";
 
 import { useState } from "react";
+import StrategyInsights from "@/components/StrategyInsights";
 import { useEvmAddress } from "@coinbase/cdp-hooks";
+
 
 /**
  * Portfolio Rebalancer UI adapted from app/portfolio.tsx
@@ -113,7 +115,8 @@ export default function PortfolioRebalancer() {
                       ? "bg-emerald-600 text-white shadow-lg"
                       : "bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border border-emerald-200"
                   }`}
-                >
+                > 
+                  
                   Conservative
                 </button>
                 <button
@@ -162,6 +165,14 @@ export default function PortfolioRebalancer() {
                   </div>
                 </div>
               </div>
+               {/* Enhanced Strategic Insights */}
+              <StrategyInsights 
+                ethPercentage={ethPercentage}
+                usdcPercentage={usdcPercentage}
+                riskLevel={risk.label}
+              />
+                  
+                  Conservative
 
               {showSlider && selectedPreset === "custom" && (
                 <div className="mb-6 p-4 bg-gray-50 rounded-lg border border-gray-200">
