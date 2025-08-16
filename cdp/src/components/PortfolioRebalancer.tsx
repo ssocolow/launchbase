@@ -215,7 +215,7 @@ export default function PortfolioRebalancer() {
                     value={depositAmount}
                     onChange={e => setDepositAmount(e.target.value)}
                     placeholder="0.00"
-                    className="w-full px-4 py-3 border border-gray-300 rounded-lg text-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 pr-16"
+                    className="w-full px-4 py-3 border border-gray-300 rounded-lg text-lg text-gray-900 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 pr-16"
                   />
                   <span className="absolute right-4 top-3 text-gray-500 font-medium">USDC</span>
                 </div>
@@ -225,7 +225,7 @@ export default function PortfolioRebalancer() {
                     <button
                       key={amount}
                       onClick={() => setDepositAmount(amount.toString())}
-                      className="px-3 py-2 bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded-lg text-sm font-medium transition-colors"
+                      className="px-3 py-2 bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded-lg text-sm font-medium text-gray-900 transition-colors"
                     >
                       ${amount}
                     </button>
@@ -237,13 +237,13 @@ export default function PortfolioRebalancer() {
                     <div className="grid grid-cols-2 gap-4 text-sm">
                       <div>
                         <span className="text-gray-600">ETH allocation:</span>
-                        <span className="font-medium ml-2">
+                        <span className="font-medium ml-2 text-gray-900">
                           ${((parseFloat(depositAmount) * ethPercentage) / 100).toFixed(2)}
                         </span>
                       </div>
                       <div>
                         <span className="text-gray-600">USDC allocation:</span>
-                        <span className="font-medium ml-2">
+                        <span className="font-medium ml-2 text-gray-900">
                           ${((parseFloat(depositAmount) * usdcPercentage) / 100).toFixed(2)}
                         </span>
                       </div>
