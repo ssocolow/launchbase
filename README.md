@@ -1,4 +1,12 @@
-# 🏗 Scaffold-ETH 2
+# Launchpad
+Onboarding noobs to risk-conscious crypto investing
+
+## MVP
+- [ ] user can easily make a new wallet through email code
+- [ ] ...
+
+## Addons
+ -[ ] add more tokens
 
 <h4 align="center">
   <a href="https://docs.scaffoldeth.io">Documentation</a> |
