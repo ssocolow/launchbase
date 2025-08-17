@@ -1,0 +1,33 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.24;
+
+import "./Interfaces.sol";
+import "./UserPortfolio.sol";
+
+/**
+ * Factory contract - deploys individual user contracts
+ */
+contract PortfolioFactory {
+    IERC20 public immutable USDC;
+    mapping(address => address) public userContracts;
+    
+    event UserPortfolioCreated(address indexed user, address contractAddress);
+    
+    constructor(address _usdc) {
+        require(_usdc != address(0), "BAD_USDC");
+        USDC = IERC20(_usdc);
+    }
+    
+    /// Create a new portfolio for the calling user
+    function createUserPortfolio() external {
+        require(userContracts[msg.sender] == address(0), "EXISTS");
+        UserPortfolio userPortfolio = new UserPortfolio(address(USDC), msg.sender);
+        userContracts[msg.sender] = address(userPortfolio);
+        emit UserPortfolioCreated(msg.sender, address(userPortfolio));
+    }
+    
+    /// Get user's portfolio address
+    function getUserPortfolio(address user) external view returns (address) {
+        return userContracts[user];
+    }
+}
