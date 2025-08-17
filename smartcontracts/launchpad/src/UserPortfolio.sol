@@ -127,17 +127,42 @@ contract UserPortfolio is ReentrancyGuard {
         require(portfolio.length > 0, "no target");
         require(liquidityVault != address(0), "NO_VAULT");
 
-        // Demo: Convert all non-USDC assets to USDC using LiquidityVault
+        // Calculate total portfolio value in USDC
+        uint256 totalValueUSDC = calculatePortfolioValue();
+        
+        // For each asset, calculate target amount and rebalance
         for (uint i = 0; i < portfolio.length; i++) {
             address token = portfolio[i].token;
-            if (token == address(0) || token == address(USDC)) continue; // Skip zero address and USDC itself
-            uint256 bal = IERC20(token).balanceOf(address(this));
-            if (bal == 0) continue;
-
-            // Demo: For WETH, use LiquidityVault's fixed-rate swap
-            if (token == ILiquidityVault(liquidityVault).WETH()) {
-                SafeERC20.safeApprove(IERC20(token), liquidityVault, bal);
-                ILiquidityVault(liquidityVault).swapExactWETHForUSDCFixed(bal, address(this));
+            uint16 targetBps = portfolio[i].bps;
+            
+            if (token == address(0)) continue;
+            
+            // Calculate target value in USDC for this asset
+            uint256 targetValueUSDC = (totalValueUSDC * targetBps) / MAX_BPS;
+            
+            if (token == address(USDC)) {
+                // For USDC, we already have the right amount after other swaps
+                continue;
+            } else if (token == ILiquidityVault(liquidityVault).WETH()) {
+                // Handle WETH rebalancing
+                uint256 currentWETH = IERC20(token).balanceOf(address(this));
+                
+                // Convert current WETH to USDC value using fixed rate (1 ETH = 4550 USDC)
+                uint256 currentValueUSDC = (currentWETH * 4550000000) / 1e18; // 4550 USDC with 6 decimals
+                
+                if (currentValueUSDC > targetValueUSDC) {
+                    // We have excess WETH, swap some to USDC
+                    uint256 excessValueUSDC = currentValueUSDC - targetValueUSDC;
+                    uint256 wethToSwap = (excessValueUSDC * 1e18) / 4550000000;
+                    
+                    if (wethToSwap > 0 && wethToSwap <= currentWETH) {
+                        SafeERC20.safeApprove(IERC20(token), liquidityVault, wethToSwap);
+                        ILiquidityVault(liquidityVault).swapExactWETHForUSDCFixed(wethToSwap, address(this));
+                    }
+                } else if (currentValueUSDC < targetValueUSDC) {
+                    // We need more WETH, but for demo we'll skip buying WETH
+                    // In a full implementation, you'd swap USDC for WETH here
+                }
             }
         }
  
