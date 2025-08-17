@@ -176,11 +176,12 @@ function StrategySelection({ onStrategySelect }: { onStrategySelect: (strategy: 
 }
 
 // Investment Dashboard Screen (Screen 2)
-function InvestmentDashboard({ strategy, ethAllocation, defaultInvestment, onBack }: { 
+function InvestmentDashboard({ strategy, ethAllocation, defaultInvestment, onBack, onBuyUSDC }: { 
   strategy: string; 
   ethAllocation: number; 
   defaultInvestment: number;
-  onBack: () => void 
+  onBack: () => void;
+  onBuyUSDC?: (amount?: string) => Promise<void> | void;
 }) {
   const [depositAmount, setDepositAmount] = useState(defaultInvestment.toString());
   const [totalInvested, setTotalInvested] = useState(defaultInvestment);
@@ -265,6 +266,11 @@ function InvestmentDashboard({ strategy, ethAllocation, defaultInvestment, onBac
   };
 
   const needsRebalancing = Math.abs(currentETHAllocation - ethAllocation) > 2;
+
+  const handleBuyUSDC = () => {
+    if (!depositAmount) return;
+    onBuyUSDC?.(depositAmount);
+  };
 
   // Pie chart calculation with animation
   const ethAngle = isLoaded ? (currentETHAllocation / 100) * 360 : 0;
@@ -431,18 +437,18 @@ function InvestmentDashboard({ strategy, ethAllocation, defaultInvestment, onBac
 
               {/* Legend */}
               <div className="grid grid-cols-2 gap-6">
-                <div className="flex items-center gap-4 p-4 bg-gradient-to-r from-indigo-50 to-indigo-100 rounded-xl border border-indigo-200/50">
-                  <div className="w-6 h-6 bg-gradient-to-br from-indigo-500 to-indigo-600 rounded-full shadow-sm"></div>
-                  <div>
-                    <div className="font-semibold text-gray-900">Ethereum</div>
-                    <div className="text-sm text-gray-600">{currentETHAllocation.toFixed(1)}% • ${ethValue.toLocaleString()}</div>
-                  </div>
-                </div>
                 <div className="flex items-center gap-4 p-4 bg-gradient-to-r from-emerald-50 to-emerald-100 rounded-xl border border-emerald-200/50">
                   <div className="w-6 h-6 bg-gradient-to-br from-emerald-500 to-emerald-600 rounded-full shadow-sm"></div>
                   <div>
                     <div className="font-semibold text-gray-900">USDC</div>
                     <div className="text-sm text-gray-600">{usdcAllocation.toFixed(1)}% • ${usdcValue.toLocaleString()}</div>
+                  </div>
+                </div>
+                <div className="flex items-center gap-4 p-4 bg-gradient-to-r from-indigo-50 to-indigo-100 rounded-xl border border-indigo-200/50">
+                  <div className="w-6 h-6 bg-gradient-to-br from-indigo-500 to-indigo-600 rounded-full shadow-sm"></div>
+                  <div>
+                    <div className="font-semibold text-gray-900">Ethereum</div>
+                    <div className="text-sm text-gray-600">{currentETHAllocation.toFixed(1)}% • ${ethValue.toLocaleString()}</div>
                   </div>
                 </div>
               </div>
@@ -500,9 +506,9 @@ function InvestmentDashboard({ strategy, ethAllocation, defaultInvestment, onBac
                 </div>
 
                 <button
-                  onClick={handleDeposit}
+                  onClick={handleBuyUSDC}
                   disabled={!depositAmount}
-                  className="w-full bg-gray-900 text-white py-3 px-4 rounded-xl font-medium hover:bg-gray-800 transition-colors disabled:bg-gray-300 disabled:cursor-not-allowed"
+                  className="w-full bg-green-600 text-white py-3 px-4 rounded-xl font-medium hover:bg-green-700 transition-colors disabled:bg-gray-300 disabled:cursor-not-allowed"
                 >
                   Deposit Funds
                 </button>
@@ -510,7 +516,7 @@ function InvestmentDashboard({ strategy, ethAllocation, defaultInvestment, onBac
                 <button
                   onClick={handleWithdraw}
                   disabled={!depositAmount || parseFloat(depositAmount || "0") > totalInvested}
-                  className="w-full bg-red-600 text-white py-3 px-4 rounded-xl font-medium hover:bg-red-700 transition-colors disabled:bg-gray-300 disabled:cursor-not-allowed"
+                  className="w-full bg-blue-600 text-white py-3 px-4 rounded-xl font-medium hover:bg-blue-700 transition-colors disabled:bg-gray-300 disabled:cursor-not-allowed"
                 >
                   Withdraw Funds
                 </button>
@@ -566,7 +572,7 @@ function InvestmentDashboard({ strategy, ethAllocation, defaultInvestment, onBac
 }
 
 // Main Portfolio Flow Component
-export default function PortfolioFlow() {
+export default function PortfolioFlow({ onBuyUSDC }: { onBuyUSDC?: (amount?: string) => Promise<void> | void }) {
   const [currentScreen, setCurrentScreen] = useState("strategy"); // "strategy" or "dashboard"
   const [selectedStrategy, setSelectedStrategy] = useState("");
   const [ethAllocation, setEthAllocation] = useState(50);
@@ -592,6 +598,7 @@ export default function PortfolioFlow() {
       ethAllocation={ethAllocation}
       defaultInvestment={defaultInvestment}
       onBack={handleBack}
+      onBuyUSDC={onBuyUSDC}
     />
   );
 }

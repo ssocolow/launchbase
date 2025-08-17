@@ -25,7 +25,7 @@ export default function PortfolioRebalancer() {
 
 
   // Call our backend /quote endpoint which returns a ready-to-open Onramp URL
-  const getOnrampUrlFromServer = async (): Promise<string> => {
+  const getOnrampUrlFromServer = async (amountOverride?: string): Promise<string> => {
     if (!evmAddress) throw new Error('Wallet address is required');
     const response = await fetch('http://localhost:3007/quote', {
       method: 'POST',
@@ -33,7 +33,7 @@ export default function PortfolioRebalancer() {
       body: JSON.stringify({
         destination_address: evmAddress,
         // Optional: pass amount/currency if server supports it
-        payment_amount: depositAmount || undefined,
+        payment_amount: amountOverride || depositAmount || undefined,
         payment_currency: 'USD',
         payment_method: 'CARD',
         country: 'US',
@@ -117,9 +117,9 @@ export default function PortfolioRebalancer() {
     setShowSlider(true);
   };
   
-  const handleBuyUSDC = async () => {
+  const handleBuyUSDC = async (amount?: string) => {
     try {
-      const url = await getOnrampUrlFromServer();
+      const url = await getOnrampUrlFromServer(amount);
       window.open(url, "_blank", "width=500,height=700");
     } catch (e) {
       console.error(e);
@@ -129,7 +129,7 @@ export default function PortfolioRebalancer() {
  
      return (
   <div className="w-full">
-    <PortfolioDashboard />
+    <PortfolioDashboard onBuyUSDC={handleBuyUSDC} />
   </div>
 );
 }

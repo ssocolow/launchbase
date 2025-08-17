@@ -7,8 +7,8 @@ export default function SignedInScreen() {
   return (
     <>
       <Header
-        title="Portfolio Rebalancer"
-        subtitle="Makes investing easy"
+        title="🌅🚀 LaunchBase"
+        subtitle="Make investing easy"
         showNetworkBadge
       />
       <main className="main flex-col-container flex-grow">
