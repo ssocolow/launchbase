@@ -5,7 +5,8 @@ import "./Interfaces.sol";
 import "./Libraries.sol";
 
 /**
- * Individual user portfolio - each user gets their own
+ * UserPortfolio - Multi-token portfolio management
+ * Tracks allocations and calculates portfolio value based on target percentages
  */
 contract UserPortfolio is ReentrancyGuard {
     using SafeERC20 for IERC20;
@@ -14,256 +15,165 @@ contract UserPortfolio is ReentrancyGuard {
     address public immutable user;
     uint8 public immutable usdcDec;
     uint16 public constant MAX_BPS = 10_000;
-    uint8 public constant PRICE_DECIMALS = 8; // Prices returned by _getAssetPrice use 8 decimals
+    uint8 public constant PRICE_DECIMALS = 8;
 
-    // External DEX router (for future real swaps)
-    address public uniswapRouter; // TODO: set to real router when implementing swaps
-
-    // Oracle price feeds
-    mapping(uint256 => AggregatorV3Interface) public priceFeeds;
-
-    // Struct for each portfolio asset
-    struct PortfolioAsset {
-        uint256 assetId;        // 0=USDC, 1=WETH, 2=BTC, etc.
-        uint256 units;          // Actual units (USDC units, WETH units, etc.)
-        uint16 bps;             // Target allocation
-        uint256 lastPrice;      // Price when last updated (for rebalancing)
-        uint256 lastEdited;     // Timestamp of last edit (for rebalancing)
+    struct PortfolioAllocation {
+        address token;         // Token address
+        uint16 bps;            // Target allocation percentage
+        uint8 decimals;        // Asset decimals
+        address priceFeed;     // Price feed address
+        uint256 lastEdited;    // Timestamp of last edit
     }
 
-    // User's portfolio
-    PortfolioAsset[] public portfolio;
-    
-    // Asset metadata for future extensibility
-    mapping(uint256 => string) public assetNames;
-    mapping(uint256 => uint8) public assetDecimals;
-    mapping(uint256 => bool) public isAssetSupported; // guard unsupported assets
-    mapping(uint256 => address) public assetTokenAddresses; // ERC20 token addresses for assets (required for real swaps)
-    // Default Uniswap V3 paths (preconfigured, per assetId). Assumption: each supported asset has a direct or
-    // multi-hop route to/from USDC. For single-hop, path = encodePacked(USDC, fee, ASSET). For multi-hop, concatenate hops.
-    // These defaults are used whenever a function with "WithDefaultPaths" is called, so callers don't have to supply paths.
-    mapping(uint256 => bytes) public assetDefaultBuyV3Path;  // USDC -> Asset
-    mapping(uint256 => bytes) public assetDefaultSellV3Path; // Asset -> USDC
+    // Portfolio configuration - array of allocations
+    PortfolioAllocation[] public portfolio;
 
     // Events
-    event Deposit(address indexed user, uint256 usdcIn);
-    event WithdrawAllUSDC(address indexed user, uint256 usdcOut);
+    event Deposit(address indexed user, uint256 usdcAmount);
+    event PortfolioAllocationSet(address indexed user, address[] tokens, uint16[] bps);
+    event Withdraw(address indexed user, uint256 usdcAmount);
     event PortfolioRebalanced(address indexed user);
-    event SwapUsdcToPortfolioRequested(address indexed user); // future real swap
-    event SwapAllAssetsToUsdcRequested(address indexed user); // future real swap
 
-    // Only that specific user can call these functions
     modifier onlyUser() { require(msg.sender == user, "ONLY_USER"); _; }
 
     constructor(
         address _usdc,
         address _user,
         address _usdcPriceFeed,
-        address _wethPriceFeed,
-        address _router,
-        uint256[] memory _assetIds,
-        address[] memory _tokenAddrs,
-        bytes[] memory _defaultBuyPaths,
-        bytes[] memory _defaultSellPaths
+        address _wethPriceFeed
     ) {
         USDC = IERC20(_usdc);
         user = _user;
         usdcDec = IERC20(_usdc).decimals();
-        
-        // Initialize asset metadata
-        assetNames[0] = "USDC";
-        assetNames[1] = "WETH";
-        assetDecimals[0] = 6;
-        assetDecimals[1] = 18;
-        isAssetSupported[0] = true;
-        isAssetSupported[1] = true;
 
         // Set price feeds
         require(_usdcPriceFeed != address(0), "BAD_USDC_FEED");
         require(_wethPriceFeed != address(0), "BAD_WETH_FEED");
-        priceFeeds[0] = AggregatorV3Interface(_usdcPriceFeed); // USDC
-        priceFeeds[1] = AggregatorV3Interface(_wethPriceFeed); // WETH
-
-        // Set Uniswap router
-        require(_router != address(0), "BAD_ROUTER");
-        uniswapRouter = _router;
-
-        // Seed default token addresses and paths
-        require(_assetIds.length == _tokenAddrs.length, "LEN_MISMATCH_TOKENS");
-        require(_assetIds.length == _defaultBuyPaths.length, "LEN_MISMATCH_BUY");
-        require(_assetIds.length == _defaultSellPaths.length, "LEN_MISMATCH_SELL");
-        for (uint256 i = 0; i < _assetIds.length; i++) {
-            uint256 aId = _assetIds[i];
-            address t = _tokenAddrs[i];
-            bytes memory bp = _defaultBuyPaths[i];
-            bytes memory sp = _defaultSellPaths[i];
-            if (aId == 0) { // Skip USDC path, but token address should be USDC token itself
-                if (t != address(0)) {
-                    assetTokenAddresses[aId] = t;
-                }
-                continue;
-            }
-            if (t != address(0)) {
-                assetTokenAddresses[aId] = t;
-            }
-            if (bp.length > 0) { assetDefaultBuyV3Path[aId] = bp; }
-            if (sp.length > 0) { assetDefaultSellV3Path[aId] = sp; }
-        }
     }
 
     /* ---------------- Core Functions ---------------- */
 
-     /// Set targets from desired allocation and immediately rebalance using default paths.
-    ///
-    /// Inputs:
-    /// - usdcIn: amount of USDC to pull from user (must be approved)
-    /// - _desiredAllocation: per-assetId target bps (USDC rows included; USDC bps remains as USDC)
-    /// - sellAmountOutMinimums: per non-USDC row min-out for the sell stage (Asset->USDC). On first deposit this will
-    ///   typically be zeros (there is nothing to sell yet), but we keep the parameter for uniformity and future calls.
-    /// - buyAmountOutMinimums: per non-USDC row min-out for the buy stage (USDC->Asset)
-    ///
-    /// Flow:
-    /// 1) Pull USDC and write target bps rows (units initially 0)
-    /// 2) Build default sell/buy path arrays based on the portfolio order
-    /// 3) Call _rebalanceWithPaths(), which:
-    ///    - Sells all non-USDC balances to USDC (no-op on first deposit)
-    ///    - Buys each non-USDC asset per target bps, using default buy paths and min-outs
-    ///    - Refreshes units from actual on-chain balances, and stamps lastPrice/lastEdited
-    function depositUsdcAndRebalanceWithDefaults(
-        uint256 usdcIn,
-        PortfolioAsset[] memory _desiredAllocation,
-        uint256[] calldata sellAmountOutMinimums,
-        uint256[] calldata buyAmountOutMinimums
-    ) external onlyUser nonReentrant {
+    /// Deposit USDC into the portfolio
+    function depositUsdc(uint256 usdcIn) external onlyUser nonReentrant {
         require(usdcIn > 0, "ZERO_IN");
-        require(_desiredAllocation.length > 0, "EMPTY_ALLOC");
-        require(uniswapRouter != address(0), "NO_ROUTER");
-
-        // Validate and pull USDC
-        uint256 totalBps = 0; uint256 nonUsdcCount = 0;
-        for (uint i=0;i<_desiredAllocation.length;i++) {
-            require(isAssetSupported[_desiredAllocation[i].assetId], "ASSET_UNSUPPORTED");
-            require(_desiredAllocation[i].bps > 0, "ZERO_BPS");
-            totalBps += _desiredAllocation[i].bps;
-            if (_desiredAllocation[i].assetId != 0) nonUsdcCount++;
-        }
-        require(totalBps == MAX_BPS, "BAD_TOTAL_BPS");
-        require(sellAmountOutMinimums.length == nonUsdcCount, "SELL_AMOUNTS_MISMATCH");
-        require(buyAmountOutMinimums.length  == nonUsdcCount, "BUY_AMOUNTS_MISMATCH");
+        
+        // Pull USDC
         SafeERC20.safeTransferFrom(USDC, msg.sender, address(this), usdcIn);
-
-        // Set portfolio targets (units set later by rebalance)
-        delete portfolio;
-        for (uint i=0;i<_desiredAllocation.length;i++) {
-            uint256 aId = _desiredAllocation[i].assetId;
-            portfolio.push(PortfolioAsset({
-                assetId: aId,
-                units: 0,
-                bps: _desiredAllocation[i].bps,
-                lastPrice: _getAssetPrice(aId),
-                lastEdited: block.timestamp
-            }));
-        }
-
-        // Build default paths and run internal rebalance
-        (bytes[] memory sellPaths, bytes[] memory buyPaths) = _buildDefaultPaths();
-        _rebalanceWithPaths(sellPaths, sellAmountOutMinimums, buyPaths, buyAmountOutMinimums);
 
         emit Deposit(user, usdcIn);
     }
 
-    /// Withdraw everything as USDC using default sell paths per asset (one-hop or multi-hop). 
-    /// Caller supplies per-asset sell min-outs aligned with non-USDC rows in current portfolio order.
-    /// Flow: build default sell paths → swap all non‑USDC to USDC → clear portfolio → transfer USDC out.
-    function withdrawAllAsUSDCWithDefaultPaths(uint256[] calldata sellAmountOutMinimums) external onlyUser nonReentrant {
-        require(uniswapRouter != address(0), "NO_ROUTER");
-        require(portfolio.length > 0, "NO_PORTFOLIO");
+    /// Set the portfolio allocation targets
+    function setPortfolioAllocation(
+        address[] memory tokens,
+        uint16[] memory bps,
+        uint8[] memory decimals,
+        address[] memory priceFeeds
+    ) external onlyUser {
+        require(tokens.length > 0, "EMPTY_ALLOC");
+        require(tokens.length == bps.length, "LEN_MISMATCH_BPS");
+        require(tokens.length == decimals.length, "LEN_MISMATCH_DECIMALS");
+        require(tokens.length == priceFeeds.length, "LEN_MISMATCH_FEEDS");
 
-        // Build default path arrays; we only need the sell side here
-        (bytes[] memory sellPaths, ) = _buildDefaultPaths();
-
-        // Sanity check on min-outs alignment
-        uint256 nonUsdcCount = 0; for (uint i=0;i<portfolio.length;i++) if (portfolio[i].assetId != 0) nonUsdcCount++;
-        require(sellAmountOutMinimums.length == nonUsdcCount, "SELL_AMOUNTS_MISMATCH");
-
-        // Swap all non‑USDC balances into USDC
-        _swapNonUsdcAssets(sellPaths, sellAmountOutMinimums);
-
-        // Transfer USDC to user
+        // Validate allocation
+        uint256 totalBps = 0;
+        for (uint i = 0; i < bps.length; i++) {
+            require(bps[i] > 0, "ZERO_BPS");
+            totalBps += bps[i];
+        }
+        require(totalBps == MAX_BPS, "BAD_TOTAL_BPS");
+        
+        // Clear existing portfolio by deleting the array
         delete portfolio;
-        uint256 usdcOut = USDC.balanceOf(address(this));
-        require(usdcOut > 0, "NO_USDC_OUT");
-        SafeERC20.safeTransfer(USDC, user, usdcOut);
+        
+        // Set new portfolio allocations
+        for (uint i = 0; i < tokens.length; i++) {
+            portfolio.push(PortfolioAllocation({
+                token: tokens[i],
+                bps: bps[i],
+                decimals: decimals[i],
+                priceFeed: priceFeeds[i],
+                lastEdited: block.timestamp
+            }));
+        }
 
-        emit SwapAllAssetsToUsdcRequested(user);
-        emit WithdrawAllUSDC(user, usdcOut);
+        emit PortfolioAllocationSet(user, tokens, bps);
+    }
+
+    /// Withdraw all USDC
+    function withdrawAllAsUSDC() external onlyUser nonReentrant {
+        uint256 usdcBalance = USDC.balanceOf(address(this));
+        require(usdcBalance > 0, "NO_BALANCE");
+        
+        // Transfer USDC to user
+        SafeERC20.safeTransfer(USDC, user, usdcBalance);
+        
+        emit Withdraw(user, usdcBalance);
     }
 
     /* ---------------- View Functions ---------------- */
 
-    /// Get user's current portfolio
-    function getPortfolio() external view returns (PortfolioAsset[] memory) {
-        return portfolio;
-    }
-
-    /// Get total portfolio value in USDC (including staking gains!)
-    function getTotalPortfolioValue() external view returns (uint256) {
-        return _portfolioValueUsdc(); 
-    }
-
-    /// Core calculator: compute total portfolio value in USDC using Chainlink oracles directly
-    function _portfolioValueUsdc() internal view returns (uint256 total) {
+    function calculatePortfolioValue() public view returns (uint256 total) {
+        uint256 usdcBalance = USDC.balanceOf(address(this));
+        total = 0;
+        
         for (uint i = 0; i < portfolio.length; i++) {
-            uint256 assetId = portfolio[i].assetId;
-            uint256 units = portfolio[i].units;
-            if (assetId == 0) {
-                total += units; // USDC units already in USDC decimals
+            PortfolioAllocation memory allocation = portfolio[i];
+            
+            if (allocation.token == address(USDC)) {
+                // USDC allocation - direct value
+                total += (usdcBalance * allocation.bps) / MAX_BPS;
             } else {
-                uint256 price = _getAssetPrice(assetId); // PRICE_DECIMALS (8)
-                uint256 aDec = assetDecimals[assetId];
-                // usdc = units * price * 10^usdcDec / 10^(aDec + PRICE_DECIMALS)
-                total += (units * price * (10 ** usdcDec)) / (10 ** (aDec + PRICE_DECIMALS));
+                // Other asset allocation - calculate value in USDC terms
+                uint256 allocationAmount = (usdcBalance * allocation.bps) / MAX_BPS;
+                uint256 price = _getAssetPrice(allocation.priceFeed);
+                
+                // Convert allocation to asset units, then back to USDC value
+                uint256 assetUnits = (allocationAmount * (10 ** allocation.decimals)) / (price * (10 ** usdcDec));
+                total += (assetUnits * price * (10 ** usdcDec)) / (10 ** (allocation.decimals + PRICE_DECIMALS));
             }
         }
     }
     
     /* ---------------- Convenience Functions ---------------- */
     
-    /// NOTE: Convenience helpers. You can derive the same information from getPortfolio() and getTotalPortfolioValue().
-    /// - getUserAllocationBps(): returns stored target bps per asset (not live market weights)
-    /// - getUsdcBalance(): returns on-chain USDC balance held by this portfolio
-    /// - getAssetBalance(assetId): returns stored units for that asset (synthetic or actual)
-    function getUserAllocationBps() external view returns (uint16[] memory bps) {
+    function getUserAllocationBps() external view returns (address[] memory tokens, uint16[] memory bps) {
+        tokens = new address[](portfolio.length);
         bps = new uint16[](portfolio.length);
+        
         for (uint i = 0; i < portfolio.length; i++) {
+            tokens[i] = portfolio[i].token;
             bps[i] = portfolio[i].bps;
         }
-        return bps;
     }
 
     function getUsdcBalance() external view returns (uint256) {
         return USDC.balanceOf(address(this));
     }
 
-    function getAssetBalance(uint256 assetId) external view returns (uint256) {
+    function getAssetAllocation(address token) external view returns (uint16) {
         for (uint i = 0; i < portfolio.length; i++) {
-            if (portfolio[i].assetId == assetId) {
-                return portfolio[i].units;
+            if (portfolio[i].token == token) {
+                return portfolio[i].bps;
             }
         }
         return 0;
     }
 
+    function getPortfolioLength() external view returns (uint256) {
+        return portfolio.length;
+    }
+
     /* ---------------- Internal Helpers ---------------- */
 
-    function _getAssetPrice(uint256 assetId) internal view returns (uint256) {
-        AggregatorV3Interface priceFeed = priceFeeds[assetId];
-        require(address(priceFeed) != address(0), "ORACLE_NOT_SET");
+    function _getAssetPrice(address priceFeed) internal view returns (uint256) {
+        require(priceFeed != address(0), "ORACLE_NOT_SET");
 
-        (, int256 price, , , ) = priceFeed.latestRoundData();
+        AggregatorV3Interface feed = AggregatorV3Interface(priceFeed);
+        (, int256 price, , , ) = feed.latestRoundData();
         require(price > 0, "BAD_PRICE");
 
-        uint8 oracleDecimals = priceFeed.decimals();
+        uint8 oracleDecimals = feed.decimals();
         
         // Adjust price to our internal PRICE_DECIMALS (8)
         if (oracleDecimals > PRICE_DECIMALS) {
@@ -271,134 +181,5 @@ contract UserPortfolio is ReentrancyGuard {
         } else {
             return uint256(price) * (10**(PRICE_DECIMALS - oracleDecimals));
         }
-    }
-
-    /// Helper to swap USDC -> target asset using an encoded V3 path (USDC must be tokenIn of path)
-    function _swapUsdcToAsset(bytes memory path, uint256 amountIn, uint256 amountOutMinimum) internal {
-        require(amountIn > 0, "ZERO_IN");
-        // Approve router to spend USDC
-        SafeERC20.safeApprove(USDC, uniswapRouter, 0);
-        SafeERC20.safeApprove(USDC, uniswapRouter, amountIn);
-
-        IUniswapV3Router.ExactInputParams memory params = IUniswapV3Router.ExactInputParams({
-            path: path,
-            recipient: address(this),
-            deadline: block.timestamp,
-            amountIn: amountIn,
-            amountOutMinimum: amountOutMinimum
-        });
-        IUniswapV3Router(uniswapRouter).exactInput(params);
-    }
-
-    /// Build default sell/buy paths arrays aligned with non-USDC rows.
-    ///
-    /// Alignment contract:
-    /// - We iterate the current portfolio and consider rows with assetId != 0 (non-USDC) in order.
-    /// - For each such row, we append its preconfigured default sell and buy paths to the arrays.
-    /// - Callers must provide amountOutMinimums arrays that match this exact ordering.
-    function _buildDefaultPaths() internal view returns (bytes[] memory sellPaths, bytes[] memory buyPaths) {
-        uint256 nonUsdcCount = 0;
-        for (uint i = 0; i < portfolio.length; i++) if (portfolio[i].assetId != 0) nonUsdcCount++;
-        sellPaths = new bytes[](nonUsdcCount);
-        buyPaths  = new bytes[](nonUsdcCount);
-        uint256 idx = 0;
-        for (uint i = 0; i < portfolio.length; i++) {
-            uint256 aId = portfolio[i].assetId;
-            if (aId == 0) continue;
-            bytes storage sp = assetDefaultSellV3Path[aId];
-            bytes storage bp = assetDefaultBuyV3Path[aId];
-            require(sp.length > 0 && bp.length > 0, "DEFAULT_PATH_NOT_SET");
-            sellPaths[idx] = sp; buyPaths[idx] = bp; idx++;
-        }
-    }
-
-    /// Internal: swap all existing non‑USDC token balances into USDC using provided paths/min-outs.
-    /// Inputs must align to non‑USDC rows in `portfolio` order.
-    function _swapNonUsdcAssets(bytes[] memory sellPaths, uint256[] memory amountOutMinimums) internal {
-        require(sellPaths.length == amountOutMinimums.length, "SELL_INPUT_MISMATCH");
-        if (sellPaths.length == 0) return; // nothing to sell
-        require(uniswapRouter != address(0), "NO_ROUTER");
-        uint256 idx = 0;
-        for (uint i = 0; i < portfolio.length; i++) {
-            uint256 assetId = portfolio[i].assetId;
-            if (assetId == 0) continue;
-            address tokenAddr = assetTokenAddresses[assetId];
-            if (tokenAddr == address(0)) { idx++; continue; }
-            uint256 bal = IERC20(tokenAddr).balanceOf(address(this));
-            if (bal == 0) { idx++; continue; }
-            // Approve router to pull the non‑USDC token
-            SafeERC20.safeApprove(IERC20(tokenAddr), uniswapRouter, 0);
-            SafeERC20.safeApprove(IERC20(tokenAddr), uniswapRouter, bal);
-            IUniswapV3Router.ExactInputParams memory params = IUniswapV3Router.ExactInputParams({
-                path: sellPaths[idx],
-                recipient: address(this),
-                deadline: block.timestamp,
-                amountIn: bal,
-                amountOutMinimum: amountOutMinimums[idx]
-            });
-            IUniswapV3Router(uniswapRouter).exactInput(params);
-            idx++;
-        }
-    }
-
-    
-    /// Internal helper used by both deposit-with-defaults and manual rebalance.
-    ///
-    /// Inputs must align with non-USDC rows in current portfolio order:
-    /// - sellPaths/sellAmountOutMinimums: one per non-USDC row (Asset->USDC)
-    /// - buyPaths/buyAmountOutMinimums: one per non-USDC row (USDC->Asset)
-    ///
-    /// Steps:
-    /// 1) Sell phase: convert any existing non-USDC on-chain balances into USDC using provided paths and min-outs
-    /// 2) Compute the USDC pool and target USDC per asset via bps
-    /// 3) Buy phase: swap USDC into each non-USDC asset via provided buy paths and min-outs
-    /// 4) Refresh the portfolio "units" from actual ERC-20 balances (USDC + non-USDC), update lastPrice/lastEdited
-    function _rebalanceWithPaths(
-        bytes[] memory sellPaths,
-        uint256[] memory sellAmountOutMinimums,
-        bytes[] memory buyPaths,
-        uint256[] memory buyAmountOutMinimums
-    ) internal {
-        require(uniswapRouter != address(0), "NO_ROUTER");
-        require(portfolio.length > 0, "NO_PORTFOLIO");
-        _swapNonUsdcAssets(sellPaths, sellAmountOutMinimums);
-        uint256 nonUsdcCount = 0; for (uint i=0;i<portfolio.length;i++) if (portfolio[i].assetId != 0) nonUsdcCount++;
-        require(buyPaths.length == nonUsdcCount, "BUY_PATHS_MISMATCH");
-        require(buyAmountOutMinimums.length == nonUsdcCount, "BUY_AMOUNTS_MISMATCH");
-        uint256 usdcBal = USDC.balanceOf(address(this));
-        uint256 buyIndex = 0;
-        for (uint i=0;i<portfolio.length;i++) {
-            uint256 assetId = portfolio[i].assetId; if (assetId == 0) continue;
-            uint256 targetUsdcAmt = (usdcBal * portfolio[i].bps) / MAX_BPS;
-            if (targetUsdcAmt == 0) { buyIndex++; continue; }
-            _swapUsdcToAsset(buyPaths[buyIndex], targetUsdcAmt, buyAmountOutMinimums[buyIndex]);
-            buyIndex++;
-        }
-        // refresh
-        for (uint i=0;i<portfolio.length;i++) {
-            uint256 assetId = portfolio[i].assetId;
-            if (assetId == 0) { portfolio[i].units = USDC.balanceOf(address(this)); }
-            else {
-                address tokenAddr = assetTokenAddresses[assetId];
-                if (tokenAddr != address(0)) portfolio[i].units = IERC20(tokenAddr).balanceOf(address(this));
-            }
-            portfolio[i].lastPrice = _getAssetPrice(assetId);
-            portfolio[i].lastEdited = block.timestamp;
-        }
-        emit PortfolioRebalanced(user);
-    }
-
-    /// Rebalance by selling all non-USDC assets to USDC, then buying back to target allocations.
-    /// Paths arrays must align with the order of non-USDC assets in `portfolio` (skip assetId==0).
-    ///
-    /// If all assets have direct USDC pools (assumption in this product), each path can be single-hop
-    /// encodePacked(USDC, fee, ASSET) for buys and encodePacked(ASSET, fee, USDC) for sells.
-    function rebalancePortfolio(
-        bytes[] calldata sellPaths,
-        uint256[] calldata sellAmountOutMinimums,
-        bytes[] calldata buyPaths,
-        uint256[] calldata buyAmountOutMinimums
-    ) external onlyUser nonReentrant {
-        _rebalanceWithPaths(sellPaths, sellAmountOutMinimums, buyPaths, buyAmountOutMinimums);
     }
 }
