@@ -472,7 +472,36 @@ contract UserPortfolio is ReentrancyGuard {
         }
     }
 
-   
+    /// Internal: swap all existing non‑USDC token balances into USDC using provided paths/min-outs.
+    /// Inputs must align to non‑USDC rows in `portfolio` order.
+    function _swapNonUsdcAssets(bytes[] memory sellPaths, uint256[] memory amountOutMinimums) internal {
+        require(sellPaths.length == amountOutMinimums.length, "SELL_INPUT_MISMATCH");
+        if (sellPaths.length == 0) return; // nothing to sell
+        require(uniswapRouter != address(0), "NO_ROUTER");
+        uint256 idx = 0;
+        for (uint i = 0; i < portfolio.length; i++) {
+            uint256 assetId = portfolio[i].assetId;
+            if (assetId == 0) continue;
+            address tokenAddr = assetTokenAddresses[assetId];
+            if (tokenAddr == address(0)) { idx++; continue; }
+            uint256 bal = IERC20(tokenAddr).balanceOf(address(this));
+            if (bal == 0) { idx++; continue; }
+            // Approve router to pull the non‑USDC token
+            SafeERC20.safeApprove(IERC20(tokenAddr), uniswapRouter, 0);
+            SafeERC20.safeApprove(IERC20(tokenAddr), uniswapRouter, bal);
+            IUniswapV3Router.ExactInputParams memory params = IUniswapV3Router.ExactInputParams({
+                path: sellPaths[idx],
+                recipient: address(this),
+                deadline: block.timestamp,
+                amountIn: bal,
+                amountOutMinimum: amountOutMinimums[idx]
+            });
+            IUniswapV3Router(uniswapRouter).exactInput(params);
+            idx++;
+        }
+    }
+
+    
     /// Internal helper used by both deposit-with-defaults and manual rebalance.
     ///
     /// Inputs must align with non-USDC rows in current portfolio order:
