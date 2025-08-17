@@ -3,6 +3,7 @@
 import { useState } from "react";
 import StrategyInsights from "@/components/StrategyInsights";
 import { useEvmAddress } from "@coinbase/cdp-hooks";
+import PortfolioDashboard from "@/components/PortfolioDashboard";
 
 
 /**
@@ -11,12 +12,13 @@ import { useEvmAddress } from "@coinbase/cdp-hooks";
  */
 export default function PortfolioRebalancer() {
   const { evmAddress } = useEvmAddress();
-  const isConnected = Boolean(evmAddress);
+  const isConnected = true; // Temporarily always connected for testing //const isConnected = Boolean(evmAddress); 
 
   const [riskLevel, setRiskLevel] = useState(50);
   const [depositAmount, setDepositAmount] = useState("");
   const [selectedPreset, setSelectedPreset] = useState("balanced"); // "conservative", "balanced", "aggressive", "custom"
   const [showSlider, setShowSlider] = useState(false);
+  const [showDashboard, setShowDashboard] = useState(false);
 
   // NOTE: Balance integration pending; enable primary flow for now
   const hasEnoughBalance = true;
@@ -86,16 +88,14 @@ export default function PortfolioRebalancer() {
   };
 
   const handleCreatePortfolio = () => {
-    console.log("Creating portfolio:", {
-      selectedPreset,
-      depositAmount,
-      ethPercentage,
-      usdcPercentage,
-    });
-    alert(
-      `Portfolio Creation\n\nStrategy: ${risk.label}\nAmount: $${depositAmount} USDC\nAllocation: ${ethPercentage}% ETH / ${usdcPercentage}% USDC\n\nSmart contract integration coming next!`,
-    );
-  };
+  console.log('Creating portfolio:', {
+    selectedPreset,
+    depositAmount,
+    ethPercentage,
+    usdcPercentage,
+  });
+  setShowDashboard(true);
+};
 
   return (
     <div className="w-full bg-gray-50">
@@ -303,7 +303,7 @@ export default function PortfolioRebalancer() {
             <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-card">
               <button
                 onClick={handleCreatePortfolio}
-                disabled={!isConnected || !depositAmount || !hasEnoughBalance}
+                disabled={!depositAmount}//disabled={!isConnected || !depositAmount || !hasEnoughBalance}
                 className="w-full bg-blue-600 text-white py-4 px-4 rounded-lg font-semibold text-lg hover:bg-blue-700 transition-colors disabled:bg-gray-300 disabled:cursor-not-allowed"
               >
                 {!isConnected
@@ -348,6 +348,13 @@ export default function PortfolioRebalancer() {
           </div>
         </div>
       </div>
+      
+      {/* Rebalancing Dashboard */}
+      {showDashboard && (
+        <div className="mt-8">
+          <PortfolioDashboard />
+        </div>
+      )}
     </div>
   );
 }
