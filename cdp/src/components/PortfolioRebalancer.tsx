@@ -2,7 +2,6 @@
 
 import { useState } from "react";
 
-import StrategyInsights from "@/components/StrategyInsights";
 import PortfolioDashboard from "@/components/PortfolioDashboard";
 import { useEvmAddress } from "@coinbase/cdp-hooks";
  

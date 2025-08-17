@@ -10,11 +10,11 @@ interface ProvidersProps {
 }
 
 const CDP_CONFIG: Config = {
-  projectId: process.env.NEXT_PUBLIC_CDP_PROJECT_ID ?? "",
+  projectId: "bdd4fdee-3ed6-48c5-b600-253b5923164d",
 };
 
 const APP_CONFIG: AppConfig = {
-  name: "CDP Next.js StarterKit",
+  name: "LaunchBase",
   logoUrl: "http://localhost:3000/logo.svg",
   authMethods: ["email", "sms"],
 };
