@@ -135,35 +135,6 @@ contract UserPortfolio is ReentrancyGuard {
         }
     }
     
-    /* ---------------- Convenience Functions ---------------- */
-    
-    function getUserAllocationBps() external view returns (address[] memory tokens, uint16[] memory bps) {
-        tokens = new address[](portfolio.length);
-        bps = new uint16[](portfolio.length);
-        
-        for (uint i = 0; i < portfolio.length; i++) {
-            tokens[i] = portfolio[i].token;
-            bps[i] = portfolio[i].bps;
-        }
-    }
-
-    function getUsdcBalance() external view returns (uint256) {
-        return USDC.balanceOf(address(this));
-    }
-
-    function getAssetAllocation(address token) external view returns (uint16) {
-        for (uint i = 0; i < portfolio.length; i++) {
-            if (portfolio[i].token == token) {
-                return portfolio[i].bps;
-            }
-        }
-        return 0;
-    }
-
-    function getPortfolioLength() external view returns (uint256) {
-        return portfolio.length;
-    }
-
     /* ---------------- Internal Helpers ---------------- */
 
     function _getAssetPrice(address priceFeed) internal view returns (uint256) {
