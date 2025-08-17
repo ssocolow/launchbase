@@ -2,9 +2,9 @@
 
 import { useState } from "react";
 import StrategyInsights from "@/components/StrategyInsights";
-import { useEvmAddress } from "@coinbase/cdp-hooks";
 import PortfolioDashboard from "@/components/PortfolioDashboard";
-
+import { useEvmAddress } from "@coinbase/cdp-hooks";
+import { getOnrampBuyUrl } from '@coinbase/onchainkit/fund';
 
 /**
  * Portfolio Rebalancer UI adapted from app/portfolio.tsx
@@ -12,7 +12,7 @@ import PortfolioDashboard from "@/components/PortfolioDashboard";
  */
 export default function PortfolioRebalancer() {
   const { evmAddress } = useEvmAddress();
-  const isConnected = true; // Temporarily always connected for testing //const isConnected = Boolean(evmAddress); 
+  const isConnected = Boolean(evmAddress);
 
   const [riskLevel, setRiskLevel] = useState(50);
   const [depositAmount, setDepositAmount] = useState("");
@@ -21,7 +21,19 @@ export default function PortfolioRebalancer() {
   const [showDashboard, setShowDashboard] = useState(false);
 
   // NOTE: Balance integration pending; enable primary flow for now
-  const hasEnoughBalance = true;
+  const hasEnoughBalance = false;
+
+
+  const projectId = 'bdd4fdee-3ed6-48c5-b600-253b5923164d';
+  const onrampBuyUrl = getOnrampBuyUrl({
+    projectId,
+    addresses: { '0x1': ['base'] },
+    assets: ['USDC'],
+    presetFiatAmount: 20,
+    fiatCurrency: 'USD',
+    redirectUrl: 'http://localhost:3000?param=bought',
+  });
+  console.log(onrampBuyUrl);
 
   const ethPercentage =
     selectedPreset === "custom"
@@ -83,8 +95,7 @@ export default function PortfolioRebalancer() {
   };
 
   const handleBuyUSDC = () => {
-    const onrampURL = `https://pay.coinbase.com/buy/select-asset?appId=22222222-2222-2222-2222-222222222222&addresses={"0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913":["${evmAddress}"]}&assets=["0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"]}&blockchains=["base"]`;
-    window.open(onrampURL, "_blank", "width=500,height=700");
+    window.open(onrampBuyUrl, "_blank", "width=500,height=700");
   };
 
   const handleCreatePortfolio = () => {
@@ -172,7 +183,6 @@ export default function PortfolioRebalancer() {
                 riskLevel={risk.label}
               />
                   
-                  Conservative
 
               {showSlider && selectedPreset === "custom" && (
                 <div className="mb-6 p-4 bg-gray-50 rounded-lg border border-gray-200">
@@ -271,13 +281,7 @@ export default function PortfolioRebalancer() {
 
               {!isConnected ? (
                 <div className="space-y-3">
-                  <p className="text-sm text-gray-600">Connect your Coinbase wallet to get started</p>
-                  <button
-                    onClick={handleCoinbaseConnect}
-                    className="w-full bg-blue-600 text-white py-3 px-4 rounded-lg font-medium hover:bg-blue-700 transition-colors"
-                  >
-                    Connect Coinbase Wallet
-                  </button>
+                  <p className="text-sm text-gray-600">Sign in to get started</p>
                 </div>
               ) : (
                 <div className="space-y-3">
