@@ -1,10 +1,13 @@
 "use client";
 
 import { useState } from "react";
-import StrategyInsights from "@/components/StrategyInsights";
-import PortfolioDashboard from "@/components/PortfolioDashboard";
 import { useEvmAddress } from "@coinbase/cdp-hooks";
 import { getOnrampBuyUrl } from '@coinbase/onchainkit/fund';
+import { useAccount, useWriteContract, useWaitForTransactionReceipt } from "wagmi";
+import { USER_PORTFOLIO_ABI } from "@/abi";
+import { CONTRACT_ADDRESSES } from "@/config/contracts";
+import StrategyInsights from "@/components/StrategyInsights";
+import PortfolioDashboard from "@/components/PortfolioDashboard";
 
 /**
  * Portfolio Rebalancer UI adapted from app/portfolio.tsx
@@ -13,6 +16,17 @@ import { getOnrampBuyUrl } from '@coinbase/onchainkit/fund';
 export default function PortfolioRebalancer() {
   const { evmAddress } = useEvmAddress();
   const isConnected = Boolean(evmAddress);
+
+  // Wagmi hooks for smart contract interaction
+  const { address } = useAccount();
+  
+  // Contract write hook for depositUsdc function
+  const { data: depositData, writeContract: depositUsdc, isPending: isDepositing, error: depositError } = useWriteContract();
+
+  // Wait for transaction receipt
+  const { isLoading: isConfirming, isSuccess: isDepositSuccess } = useWaitForTransactionReceipt({
+    hash: depositData,
+  });
 
   const [riskLevel, setRiskLevel] = useState(50);
   const [depositAmount, setDepositAmount] = useState("");
@@ -107,6 +121,44 @@ export default function PortfolioRebalancer() {
   });
   setShowDashboard(true);
 };
+
+  const handleDeposit = async () => {
+    if (!depositAmount || !isConnected) return;
+
+    try {
+      // Convert deposit amount to USDC units (6 decimals)
+      // 1 USDC = 1,000,000 units (6 decimals)
+      const usdcAmount = BigInt(parseFloat(depositAmount) * 1_000_000);
+      
+      // Create allocation array based on current risk settings
+      const allocation = [
+        {
+          assetId: 0n, // USDC
+          units: 0n,
+          bps: usdcPercentage * 100, // Convert percentage to basis points
+          lastPrice: 0n,
+          lastEdited: 0n
+        },
+        {
+          assetId: 1n, // WETH
+          units: 0n,
+          bps: ethPercentage * 100, // Convert percentage to basis points
+          lastPrice: 0n,
+          lastEdited: 0n
+        }
+      ];
+
+      // Call the smart contract
+      depositUsdc({
+        address: CONTRACT_ADDRESSES.baseSepolia.USER_PORTFOLIO as `0x${string}`,
+        abi: USER_PORTFOLIO_ABI,
+        functionName: 'depositUsdc',
+        args: [usdcAmount, allocation],
+      });
+    } catch (error) {
+      console.error('Deposit failed:', error);
+    }
+  };
 
   return (
     <div className="w-full bg-gray-50">
@@ -269,6 +321,44 @@ export default function PortfolioRebalancer() {
                         </span>
                       </div>
                     </div>
+                  </div>
+                )}
+
+                <button
+                  onClick={handleDeposit}
+                  disabled={!isConnected || !depositAmount || isDepositing}
+                  className="w-full bg-blue-600 text-white py-3 px-4 rounded-lg font-medium hover:bg-blue-700 transition-colors disabled:bg-gray-300 disabled:cursor-not-allowed"
+                >
+                  {isDepositing ? "Depositing..." : "Deposit"}
+                </button>
+
+                {/* Transaction Status */}
+                {depositError && (
+                  <div className="mt-3 p-3 bg-red-50 border border-red-200 rounded-lg">
+                    <p className="text-sm text-red-600">
+                      Error: {depositError.message}
+                    </p>
+                  </div>
+                )}
+
+                {(isDepositing || isConfirming) && (
+                  <div className="mt-3 p-3 bg-blue-50 border border-blue-200 rounded-lg">
+                    <p className="text-sm text-blue-600">
+                      {isDepositing ? "Sending transaction..." : "Confirming transaction..."}
+                    </p>
+                    {depositData && (
+                      <p className="text-xs text-blue-500 mt-1">
+                        Hash: {depositData.slice(0, 10)}...{depositData.slice(-8)}
+                      </p>
+                    )}
+                  </div>
+                )}
+
+                {isDepositSuccess && (
+                  <div className="mt-3 p-3 bg-green-50 border border-green-200 rounded-lg">
+                    <p className="text-sm text-green-600">
+                      ✅ Deposit successful!
+                    </p>
                   </div>
                 )}
               </div>
