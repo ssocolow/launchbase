@@ -176,9 +176,14 @@ function StrategySelection({ onStrategySelect }: { onStrategySelect: (strategy: 
 }
 
 // Investment Dashboard Screen (Screen 2)
-function InvestmentDashboard({ strategy, ethAllocation, onBack }: { strategy: string; ethAllocation: number; onBack: () => void }) {
-  const [depositAmount, setDepositAmount] = useState("");
-  const [totalInvested, setTotalInvested] = useState(0);
+function InvestmentDashboard({ strategy, ethAllocation, defaultInvestment, onBack }: { 
+  strategy: string; 
+  ethAllocation: number; 
+  defaultInvestment: number;
+  onBack: () => void 
+}) {
+  const [depositAmount, setDepositAmount] = useState(defaultInvestment.toString());
+  const [totalInvested, setTotalInvested] = useState(defaultInvestment);
   const [ethPrice, setEthPrice] = useState(3200);
   const [isUpdatingPrice, setIsUpdatingPrice] = useState(false);
   const [currentETHAllocation, setCurrentETHAllocation] = useState(ethAllocation);
@@ -192,7 +197,7 @@ function InvestmentDashboard({ strategy, ethAllocation, onBack }: { strategy: st
   useEffect(() => {
     const timer = setTimeout(() => {
       setIsLoaded(true);
-    }, 300);
+    }, 500);
     return () => clearTimeout(timer);
   }, []);
 
@@ -244,7 +249,14 @@ function InvestmentDashboard({ strategy, ethAllocation, onBack }: { strategy: st
   const handleDeposit = () => {
     if (depositAmount) {
       setTotalInvested(prev => prev + parseFloat(depositAmount));
-      setDepositAmount("");
+      // Don't clear depositAmount so user can deposit again
+    }
+  };
+
+  const handleWithdraw = () => {
+    if (depositAmount && parseFloat(depositAmount) <= totalInvested) {
+      setTotalInvested(prev => Math.max(0, prev - parseFloat(depositAmount)));
+      // Don't clear depositAmount so user can withdraw again
     }
   };
 
@@ -380,7 +392,7 @@ function InvestmentDashboard({ strategy, ethAllocation, onBack }: { strategy: st
                         strokeDasharray={`${(ethAngle / 360) * 503} 503`}
                         strokeDashoffset="0"
                         strokeLinecap="round"
-                        className="transition-all duration-[2000ms] ease-out drop-shadow-lg"
+                        className="transition-all duration-[2500ms] ease-out drop-shadow-lg"
                         style={{
                           filter: 'drop-shadow(0 4px 8px rgba(79, 70, 229, 0.3))'
                         }}
@@ -397,7 +409,7 @@ function InvestmentDashboard({ strategy, ethAllocation, onBack }: { strategy: st
                         strokeDasharray={`${(usdcAngle / 360) * 503} 503`}
                         strokeDashoffset={`-${(ethAngle / 360) * 503}`}
                         strokeLinecap="round"
-                        className="transition-all duration-[2000ms] ease-out drop-shadow-lg"
+                        className="transition-all duration-[2500ms] ease-out drop-shadow-lg"
                         style={{
                           filter: 'drop-shadow(0 4px 8px rgba(16, 185, 129, 0.3))'
                         }}
@@ -494,6 +506,14 @@ function InvestmentDashboard({ strategy, ethAllocation, onBack }: { strategy: st
                 >
                   Deposit Funds
                 </button>
+
+                <button
+                  onClick={handleWithdraw}
+                  disabled={!depositAmount || parseFloat(depositAmount || "0") > totalInvested}
+                  className="w-full bg-red-600 text-white py-3 px-4 rounded-xl font-medium hover:bg-red-700 transition-colors disabled:bg-gray-300 disabled:cursor-not-allowed"
+                >
+                  Withdraw Funds
+                </button>
               </div>
             </div>
 
@@ -550,6 +570,7 @@ export default function PortfolioFlow() {
   const [currentScreen, setCurrentScreen] = useState("strategy"); // "strategy" or "dashboard"
   const [selectedStrategy, setSelectedStrategy] = useState("");
   const [ethAllocation, setEthAllocation] = useState(50);
+  const [defaultInvestment] = useState(5); // Default $5 investment
 
   const handleStrategySelect = (strategy: string, allocation: number) => {
     setSelectedStrategy(strategy);
@@ -569,6 +590,7 @@ export default function PortfolioFlow() {
     <InvestmentDashboard 
       strategy={selectedStrategy}
       ethAllocation={ethAllocation}
+      defaultInvestment={defaultInvestment}
       onBack={handleBack}
     />
   );
