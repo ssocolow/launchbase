@@ -128,6 +128,44 @@ contract UserPortfolio is ReentrancyGuard {
     function getPortfolio() external view returns (PortfolioAllocation[] memory) {
         return portfolio;
     }
+
+    /// Debug function to test price feed
+    function testPriceFeed(address priceFeed) external view returns (uint256 price, uint8 decimals) {
+        require(priceFeed != address(0), "ORACLE_NOT_SET");
+        
+        AggregatorV3Interface feed = AggregatorV3Interface(priceFeed);
+        (, int256 priceInt, , , ) = feed.latestRoundData();
+        require(priceInt > 0, "BAD_PRICE");
+        
+        price = uint256(priceInt);
+        decimals = feed.decimals();
+    }
+
+    /// Debug function to test calculation step by step
+    function debugCalculation() external view returns (
+        uint256 usdcBalance,
+        uint256 allocationAmount,
+        uint256 price,
+        uint256 assetUnits,
+        uint256 finalValue
+    ) {
+        require(portfolio.length > 0, "NO_ALLOCATION");
+        
+        usdcBalance = USDC.balanceOf(address(this));
+        PortfolioAllocation memory allocation = portfolio[0]; // First allocation
+        
+        allocationAmount = (usdcBalance * allocation.bps) / MAX_BPS;
+        price = _getAssetPrice(allocation.priceFeed);
+        
+        // For USDC, the calculation should be simpler
+        if (allocation.token == address(USDC)) {
+            assetUnits = allocationAmount;
+            finalValue = allocationAmount;
+        } else {
+            assetUnits = (allocationAmount * (10 ** allocation.decimals)) / (price * (10 ** usdcDec));
+            finalValue = (assetUnits * price * (10 ** usdcDec)) / (10 ** (allocation.decimals + PRICE_DECIMALS));
+        }
+    }
     
     /* ---------------- Internal Helpers ---------------- */
 
