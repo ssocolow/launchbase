@@ -109,19 +109,18 @@ contract UserPortfolio is ReentrancyGuard {
 
     function calculatePortfolioValue() public view returns (uint256 total) {
         require(portfolio.length > 0, "NO_ALLOCATION");
-        
-        uint256 usdcBalance = USDC.balanceOf(address(this));
         total = 0;
-        
         for (uint i = 0; i < portfolio.length; i++) {
-            PortfolioAllocation memory allocation = portfolio[i];
-            
-            uint256 allocationAmount = (usdcBalance * allocation.bps) / MAX_BPS;
-            
-            uint256 price = _getAssetPrice(allocation.priceFeed);
-            
-            uint256 assetUnits = (allocationAmount * (10 ** allocation.decimals)) / (price * (10 ** usdcDec));
-            total += (assetUnits * price * (10 ** usdcDec)) / (10 ** (allocation.decimals + PRICE_DECIMALS));
+            PortfolioAllocation memory a = portfolio[i];
+            if (a.token == address(USDC)) {
+                total += USDC.balanceOf(address(this));
+            } else {
+                uint256 bal = IERC20(a.token).balanceOf(address(this));
+                if (bal == 0) continue;
+                uint256 price = _getAssetPrice(a.priceFeed); // 8 dp
+                // usdc = bal * price * 10^usdcDec / 10^(a.decimals + PRICE_DECIMALS)
+                total += (bal * price * (10 ** usdcDec)) / (10 ** (a.decimals + PRICE_DECIMALS));
+            }
         }
     }
 
@@ -147,4 +146,7 @@ contract UserPortfolio is ReentrancyGuard {
             return uint256(price) * (10**(PRICE_DECIMALS - oracleDecimals));
         }
     }
+
+    
+
 }
