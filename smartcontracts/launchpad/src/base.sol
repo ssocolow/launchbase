@@ -273,152 +273,90 @@ contract UserPortfolio is ReentrancyGuard {
 
     /* ---------------- Core Functions ---------------- */
 
-    /// Deposit USDC and immediately execute buys for non-USDC targets using provided Uniswap V3 paths
-    /// - buyPaths/buyAmountOutMinimums must align with the non-USDC rows in _desiredAllocation (in order)
-    function depositUsdcWithBuys(
+     /// Set targets from desired allocation and immediately rebalance using default paths.
+    ///
+    /// Inputs:
+    /// - usdcIn: amount of USDC to pull from user (must be approved)
+    /// - _desiredAllocation: per-assetId target bps (USDC rows included; USDC bps remains as USDC)
+    /// - sellAmountOutMinimums: per non-USDC row min-out for the sell stage (Asset->USDC). On first deposit this will
+    ///   typically be zeros (there is nothing to sell yet), but we keep the parameter for uniformity and future calls.
+    /// - buyAmountOutMinimums: per non-USDC row min-out for the buy stage (USDC->Asset)
+    ///
+    /// Flow:
+    /// 1) Pull USDC and write target bps rows (units initially 0)
+    /// 2) Build default sell/buy path arrays based on the portfolio order
+    /// 3) Call _rebalanceWithPaths(), which:
+    ///    - Sells all non-USDC balances to USDC (no-op on first deposit)
+    ///    - Buys each non-USDC asset per target bps, using default buy paths and min-outs
+    ///    - Refreshes units from actual on-chain balances, and stamps lastPrice/lastEdited
+    function depositUsdcAndRebalanceWithDefaults(
         uint256 usdcIn,
         PortfolioAsset[] memory _desiredAllocation,
-        bytes[] calldata buyPaths,
+        uint256[] calldata sellAmountOutMinimums,
         uint256[] calldata buyAmountOutMinimums
     ) external onlyUser nonReentrant {
         require(usdcIn > 0, "ZERO_IN");
         require(_desiredAllocation.length > 0, "EMPTY_ALLOC");
         require(uniswapRouter != address(0), "NO_ROUTER");
 
-        // Validate allocation sums to 100%
-        uint256 totalBps = 0;
-        uint256 nonUsdcCount = 0;
-        for (uint i = 0; i < _desiredAllocation.length; i++) {
+        // Validate and pull USDC
+        uint256 totalBps = 0; uint256 nonUsdcCount = 0;
+        for (uint i=0;i<_desiredAllocation.length;i++) {
             require(isAssetSupported[_desiredAllocation[i].assetId], "ASSET_UNSUPPORTED");
             require(_desiredAllocation[i].bps > 0, "ZERO_BPS");
             totalBps += _desiredAllocation[i].bps;
             if (_desiredAllocation[i].assetId != 0) nonUsdcCount++;
         }
         require(totalBps == MAX_BPS, "BAD_TOTAL_BPS");
-        require(buyPaths.length == nonUsdcCount, "BUY_PATHS_MISMATCH");
-        require(buyAmountOutMinimums.length == nonUsdcCount, "BUY_AMOUNTS_MISMATCH");
-
-        // Pull USDC from user
+        require(sellAmountOutMinimums.length == nonUsdcCount, "SELL_AMOUNTS_MISMATCH");
+        require(buyAmountOutMinimums.length  == nonUsdcCount, "BUY_AMOUNTS_MISMATCH");
         SafeERC20.safeTransferFrom(USDC, msg.sender, address(this), usdcIn);
 
-        // Execute buys per non-USDC leg
-        uint256 buyIndex = 0;
-        for (uint i = 0; i < _desiredAllocation.length; i++) {
-            uint256 assetId = _desiredAllocation[i].assetId;
-            uint256 usdcAmount = (usdcIn * _desiredAllocation[i].bps) / MAX_BPS;
-            if (assetId == 0 || usdcAmount == 0) continue; // USDC leg remains as USDC
-            _swapUsdcToAsset(buyPaths[buyIndex], usdcAmount, buyAmountOutMinimums[buyIndex]);
-            buyIndex++;
-        }
-
-        // Rebuild portfolio with actual on-chain balances
+        // Set portfolio targets (units set later by rebalance)
         delete portfolio;
-        for (uint i = 0; i < _desiredAllocation.length; i++) {
-            uint256 assetId = _desiredAllocation[i].assetId;
-            uint256 units;
-            if (assetId == 0) {
-                units = USDC.balanceOf(address(this));
-            } else {
-                address tokenAddr = assetTokenAddresses[assetId];
-                require(tokenAddr != address(0), "TOKEN_ADDR_NOT_SET");
-                units = IERC20(tokenAddr).balanceOf(address(this));
-            }
+        for (uint i=0;i<_desiredAllocation.length;i++) {
+            uint256 aId = _desiredAllocation[i].assetId;
             portfolio.push(PortfolioAsset({
-                assetId: assetId,
-                units: units,
+                assetId: aId,
+                units: 0,
                 bps: _desiredAllocation[i].bps,
-                lastPrice: _getAssetPrice(assetId),
+                lastPrice: _getAssetPrice(aId),
                 lastEdited: block.timestamp
             }));
         }
 
+        // Build default paths and run internal rebalance
+        (bytes[] memory sellPaths, bytes[] memory buyPaths) = _buildDefaultPaths();
+        _rebalanceWithPaths(sellPaths, sellAmountOutMinimums, buyPaths, buyAmountOutMinimums);
+
         emit Deposit(user, usdcIn);
     }
 
-    /// Deposit USDC using factory-stored default paths for each non-USDC asset.
-    ///
-    /// Inputs and alignment rules:
-    /// - _desiredAllocation: includes USDC row(s) and non-USDC rows with target bps. USDC rows are kept as USDC.
-    /// - buyAmountOutMinimums: one min-out per non-USDC row (in the same order the rows appear in _desiredAllocation).
-    ///   The min-out is the per-swap slippage floor. If Uniswap would return less, the tx reverts.
-    /// - Default buy path for each assetId must be set ahead of time via the factory (assetDefaultBuyV3Path).
-    ///
-    /// Behavior:
-    /// - Pulls USDC
-    /// - For each non-USDC row, swaps USDC -> Asset using the default buy path and caller-provided min-out
-    /// - Rebuilds portfolio using actual on-chain balances (USDC + ERC20 balances)
-    function depositUsdcWithDefaultPaths(
-        uint256 usdcIn,
-        PortfolioAsset[] memory _desiredAllocation,
-        uint256[] calldata buyAmountOutMinimums
-    ) external onlyUser nonReentrant {
-        require(usdcIn > 0, "ZERO_IN");
-        require(_desiredAllocation.length > 0, "EMPTY_ALLOC");
+    /// Withdraw everything as USDC using default sell paths per asset (one-hop or multi-hop). 
+    /// Caller supplies per-asset sell min-outs aligned with non-USDC rows in current portfolio order.
+    /// Flow: build default sell paths → swap all non‑USDC to USDC → clear portfolio → transfer USDC out.
+    function withdrawAllAsUSDCWithDefaultPaths(uint256[] calldata sellAmountOutMinimums) external onlyUser nonReentrant {
         require(uniswapRouter != address(0), "NO_ROUTER");
+        require(portfolio.length > 0, "NO_PORTFOLIO");
 
-        uint256 totalBps = 0;
-        uint256 nonUsdcCount = 0;
-        for (uint i = 0; i < _desiredAllocation.length; i++) {
-            require(isAssetSupported[_desiredAllocation[i].assetId], "ASSET_UNSUPPORTED");
-            require(_desiredAllocation[i].bps > 0, "ZERO_BPS");
-            totalBps += _desiredAllocation[i].bps;
-            if (_desiredAllocation[i].assetId != 0) nonUsdcCount++;
-        }
-        require(totalBps == MAX_BPS, "BAD_TOTAL_BPS");
-        require(buyAmountOutMinimums.length == nonUsdcCount, "BUY_AMOUNTS_MISMATCH");
+        // Build default path arrays; we only need the sell side here
+        (bytes[] memory sellPaths, ) = _buildDefaultPaths();
 
-        // Pull USDC from user
-        SafeERC20.safeTransferFrom(USDC, msg.sender, address(this), usdcIn);
+        // Sanity check on min-outs alignment
+        uint256 nonUsdcCount = 0; for (uint i=0;i<portfolio.length;i++) if (portfolio[i].assetId != 0) nonUsdcCount++;
+        require(sellAmountOutMinimums.length == nonUsdcCount, "SELL_AMOUNTS_MISMATCH");
 
-        // Execute buys using default paths per non-USDC asset
-        // NOTE: We intentionally skip a "sell" phase on deposit since the product thesis assumes users deposit USDC only.
-        uint256 buyIndex = 0;
-        for (uint i = 0; i < _desiredAllocation.length; i++) {
-            uint256 assetId = _desiredAllocation[i].assetId;
-            uint256 usdcAmount = (usdcIn * _desiredAllocation[i].bps) / MAX_BPS;
-            if (assetId == 0 || usdcAmount == 0) continue;
-            bytes storage p = assetDefaultBuyV3Path[assetId];
-            require(p.length > 0, "DEFAULT_PATH_NOT_SET");
-            _swapUsdcToAsset(p, usdcAmount, buyAmountOutMinimums[buyIndex]);
-            buyIndex++;
-        }
+        // Swap all non‑USDC balances into USDC
+        _swapNonUsdcAssets(sellPaths, sellAmountOutMinimums);
 
-        // Rebuild portfolio with actual on-chain balances
+        // Transfer USDC to user
         delete portfolio;
-        for (uint i = 0; i < _desiredAllocation.length; i++) {
-            uint256 assetId = _desiredAllocation[i].assetId;
-            uint256 units;
-            if (assetId == 0) {
-                units = USDC.balanceOf(address(this));
-            } else {
-                address tokenAddr = assetTokenAddresses[assetId];
-                require(tokenAddr != address(0), "TOKEN_ADDR_NOT_SET");
-                units = IERC20(tokenAddr).balanceOf(address(this));
-            }
-            portfolio.push(PortfolioAsset({
-                assetId: assetId,
-                units: units,
-                bps: _desiredAllocation[i].bps,
-                lastPrice: _getAssetPrice(assetId),
-                lastEdited: block.timestamp
-            }));
-        }
+        uint256 usdcOut = USDC.balanceOf(address(this));
+        require(usdcOut > 0, "NO_USDC_OUT");
+        SafeERC20.safeTransfer(USDC, user, usdcOut);
 
-        emit Deposit(user, usdcIn);
-    }
-
-    
-    /// Exit everything as USDC (including staking gains!)
-    function withdrawAllAsUSDC() external onlyUser nonReentrant {
-        uint256 actualBalance = USDC.balanceOf(address(this)); // Real balance (including staking)
-        require(actualBalance > 0, "EMPTY");
-
-        // Zero out before external interaction (CEI)
-        delete portfolio;
-
-        // Transfer actual balance (no quoting needed)
-        SafeERC20.safeTransfer(USDC, user, actualBalance);
-        emit WithdrawAllUSDC(user, actualBalance);
+        emit SwapAllAssetsToUsdcRequested(user);
+        emit WithdrawAllUSDC(user, usdcOut);
     }
 
     /* ---------------- View Functions ---------------- */
@@ -534,65 +472,7 @@ contract UserPortfolio is ReentrancyGuard {
         }
     }
 
-    /// Set targets from desired allocation and immediately rebalance using default paths.
-    ///
-    /// Inputs:
-    /// - usdcIn: amount of USDC to pull from user (must be approved)
-    /// - _desiredAllocation: per-assetId target bps (USDC rows included; USDC bps remains as USDC)
-    /// - sellAmountOutMinimums: per non-USDC row min-out for the sell stage (Asset->USDC). On first deposit this will
-    ///   typically be zeros (there is nothing to sell yet), but we keep the parameter for uniformity and future calls.
-    /// - buyAmountOutMinimums: per non-USDC row min-out for the buy stage (USDC->Asset)
-    ///
-    /// Flow:
-    /// 1) Pull USDC and write target bps rows (units initially 0)
-    /// 2) Build default sell/buy path arrays based on the portfolio order
-    /// 3) Call _rebalanceWithPaths(), which:
-    ///    - Sells all non-USDC balances to USDC (no-op on first deposit)
-    ///    - Buys each non-USDC asset per target bps, using default buy paths and min-outs
-    ///    - Refreshes units from actual on-chain balances, and stamps lastPrice/lastEdited
-    function depositUsdcAndRebalanceWithDefaults(
-        uint256 usdcIn,
-        PortfolioAsset[] memory _desiredAllocation,
-        uint256[] calldata sellAmountOutMinimums,
-        uint256[] calldata buyAmountOutMinimums
-    ) external onlyUser nonReentrant {
-        require(usdcIn > 0, "ZERO_IN");
-        require(_desiredAllocation.length > 0, "EMPTY_ALLOC");
-        require(uniswapRouter != address(0), "NO_ROUTER");
-
-        // Validate and pull USDC
-        uint256 totalBps = 0; uint256 nonUsdcCount = 0;
-        for (uint i=0;i<_desiredAllocation.length;i++) {
-            require(isAssetSupported[_desiredAllocation[i].assetId], "ASSET_UNSUPPORTED");
-            require(_desiredAllocation[i].bps > 0, "ZERO_BPS");
-            totalBps += _desiredAllocation[i].bps;
-            if (_desiredAllocation[i].assetId != 0) nonUsdcCount++;
-        }
-        require(totalBps == MAX_BPS, "BAD_TOTAL_BPS");
-        require(sellAmountOutMinimums.length == nonUsdcCount, "SELL_AMOUNTS_MISMATCH");
-        require(buyAmountOutMinimums.length  == nonUsdcCount, "BUY_AMOUNTS_MISMATCH");
-        SafeERC20.safeTransferFrom(USDC, msg.sender, address(this), usdcIn);
-
-        // Set portfolio targets (units set later by rebalance)
-        delete portfolio;
-        for (uint i=0;i<_desiredAllocation.length;i++) {
-            uint256 aId = _desiredAllocation[i].assetId;
-            portfolio.push(PortfolioAsset({
-                assetId: aId,
-                units: 0,
-                bps: _desiredAllocation[i].bps,
-                lastPrice: _getAssetPrice(aId),
-                lastEdited: block.timestamp
-            }));
-        }
-
-        // Build default paths and run internal rebalance
-        (bytes[] memory sellPaths, bytes[] memory buyPaths) = _buildDefaultPaths();
-        _rebalanceWithPaths(sellPaths, sellAmountOutMinimums, buyPaths, buyAmountOutMinimums);
-
-        emit Deposit(user, usdcIn);
-    }
-
+   
     /// Internal helper used by both deposit-with-defaults and manual rebalance.
     ///
     /// Inputs must align with non-USDC rows in current portfolio order:
