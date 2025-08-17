@@ -1,6 +1,9 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { useAccount, useWriteContract, useWaitForTransactionReceipt, usePublicClient } from "wagmi";
+import { baseSepolia } from "viem/chains";
+import { formatUnits } from "viem";
 
 // Strategy Selection Screen (Screen 1)
 function StrategySelection({ onStrategySelect }: { onStrategySelect: (strategy: string, allocation: number) => void }) {
@@ -176,12 +179,13 @@ function StrategySelection({ onStrategySelect }: { onStrategySelect: (strategy: 
 }
 
 // Investment Dashboard Screen (Screen 2)
-function InvestmentDashboard({ strategy, ethAllocation, defaultInvestment, onBack, onBuyUSDC }: { 
+function InvestmentDashboard({ strategy, ethAllocation, defaultInvestment, onBack, onBuyUSDC, walletAddress }: { 
   strategy: string; 
   ethAllocation: number; 
   defaultInvestment: number;
   onBack: () => void;
   onBuyUSDC?: (amount?: string) => Promise<void> | void;
+  walletAddress?: `0x${string}`;
 }) {
   const [depositAmount, setDepositAmount] = useState(defaultInvestment.toString());
   const [totalInvested, setTotalInvested] = useState(defaultInvestment);
@@ -189,10 +193,23 @@ function InvestmentDashboard({ strategy, ethAllocation, defaultInvestment, onBac
   const [isUpdatingPrice, setIsUpdatingPrice] = useState(false);
   const [currentETHAllocation, setCurrentETHAllocation] = useState(ethAllocation);
   const [isLoaded, setIsLoaded] = useState(false);
+  const { address: wagmiAddress, chainId } = useAccount();
+  const { data: hash, writeContractAsync, isPending, error } = useWriteContract();
+  const { isLoading: isConfirming, isSuccess } = useWaitForTransactionReceipt({ hash });
+  const publicClient = usePublicClient();
+  const [portfolioAddress, setPortfolioAddress] = useState("");
+  const [walletUsdc, setWalletUsdc] = useState("0");
+  const [walletEth, setWalletEth] = useState("0");
+  const [portfolioUsdc, setPortfolioUsdc] = useState("0");
+  const [portfolioWeth, setPortfolioWeth] = useState("0");
 
   const usdcAllocation = 100 - currentETHAllocation;
   const ethValue = (totalInvested * currentETHAllocation) / 100;
   const usdcValue = (totalInvested * usdcAllocation) / 100;
+  const walletUsdcFormatted = formatUnits(BigInt(walletUsdc || "0"), 6);
+  const walletEthFormatted = formatUnits(BigInt(walletEth || "0"), 18);
+  const portfolioUsdcFormatted = formatUnits(BigInt(portfolioUsdc || "0"), 6);
+  const portfolioWethFormatted = formatUnits(BigInt(portfolioWeth || "0"), 18);
 
   // Animate pie chart on load
   useEffect(() => {
@@ -258,6 +275,165 @@ function InvestmentDashboard({ strategy, ethAllocation, defaultInvestment, onBac
     if (depositAmount && parseFloat(depositAmount) <= totalInvested) {
       setTotalInvested(prev => Math.max(0, prev - parseFloat(depositAmount)));
       // Don't clear depositAmount so user can withdraw again
+    }
+  };
+
+  // Addresses (configure in env for flexibility)
+  const FACTORY_ADDRESS = (process.env.NEXT_PUBLIC_FACTORY_ADDRESS || "0xe29c701e1222404c04f934b46a2947a1d9126f69") as `0x${string}`;
+  const USDC_ADDRESS = process.env.NEXT_PUBLIC_USDC_ADDRESS as `0x${string}` | undefined;
+  const WETH_ADDRESS = process.env.NEXT_PUBLIC_WETH_ADDRESS as `0x${string}` | undefined;
+  const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000" as `0x${string}`;
+  const USDC_FEED_ADDRESS = (process.env.NEXT_PUBLIC_USDC_FEED as `0x${string}` | undefined) || ZERO_ADDRESS; // USDC assumed $1 peg
+  const WETH_FEED_ADDRESS = process.env.NEXT_PUBLIC_WETH_FEED as `0x${string}` | undefined;
+
+  useEffect(() => {
+    const fetchData = async () => {
+      try {
+        const activeAddress: `0x${string}` | undefined = walletAddress ?? wagmiAddress;
+        if (!publicClient || !activeAddress) return;
+        if (chainId && chainId !== baseSepolia.id) return;
+        const factoryAbi = [
+          { type: "function", name: "getUserPortfolio", stateMutability: "view", inputs: [{ name: "user", type: "address" }], outputs: [{ name: "", type: "address" }] },
+        ] as const;
+        const up = await publicClient.readContract({
+          abi: factoryAbi,
+          address: FACTORY_ADDRESS,
+          functionName: "getUserPortfolio",
+          args: [activeAddress],
+        });
+        const upAddr = (up as `0x${string}` | string) || "";
+        setPortfolioAddress(upAddr);
+        const erc20Abi = [
+          { type: "function", name: "balanceOf", stateMutability: "view", inputs: [{ name: "", type: "address" }], outputs: [{ name: "", type: "uint256" }] },
+        ] as const;
+        if (USDC_ADDRESS) {
+          const [wBal, pBal] = await Promise.all([
+            publicClient.readContract({ abi: erc20Abi, address: USDC_ADDRESS, functionName: "balanceOf", args: [activeAddress] }),
+            upAddr && upAddr !== "0x0000000000000000000000000000000000000000"
+              ? publicClient.readContract({ abi: erc20Abi, address: USDC_ADDRESS, functionName: "balanceOf", args: [upAddr as `0x${string}`] })
+              : Promise.resolve(0n),
+          ]);
+          setWalletUsdc(String(wBal as bigint));
+          setPortfolioUsdc(String(pBal as bigint));
+        }
+        if (WETH_ADDRESS && upAddr && upAddr !== "0x0000000000000000000000000000000000000000") {
+          const w = await publicClient.readContract({ abi: [
+            { type: "function", name: "balanceOf", stateMutability: "view", inputs: [{ name: "", type: "address" }], outputs: [{ name: "", type: "uint256" }] },
+          ] as const, address: WETH_ADDRESS, functionName: "balanceOf", args: [upAddr as `0x${string}`] });
+          setPortfolioWeth(String(w as bigint));
+        } else {
+          setPortfolioWeth("0");
+        }
+      } catch (e) {
+        console.error(e);
+      }
+    };
+    fetchData();
+  }, [publicClient, walletAddress, wagmiAddress, chainId]);
+
+  // Fetch wallet balances via server (CDP Platform balances)
+  useEffect(() => {
+    const fetchWalletBalances = async () => {
+      try {
+        const activeAddress: `0x${string}` | undefined = walletAddress ?? wagmiAddress;
+        if (!activeAddress) return;
+        const resp = await fetch(`http://localhost:3007/balances?chain=base-sepolia&address=${activeAddress}`);
+        if (!resp.ok) return;
+        const data = await resp.json();
+        const balances = data?.result?.balances || data?.balances || [];
+        // Find ETH and USDC
+        let ethRaw = 0n;
+        let usdcRaw = 0n;
+        for (const b of balances) {
+          const symbol = b?.token?.symbol;
+          const amountStr = b?.amount?.amount;
+          const decimals = b?.amount?.decimals;
+          if (typeof amountStr === 'string' && typeof decimals === 'number') {
+            const raw = BigInt(amountStr);
+            if (symbol === 'ETH') ethRaw = raw; 
+            if (symbol === 'USDC') usdcRaw = raw;
+          }
+        }
+        setWalletEth(ethRaw.toString());
+        setWalletUsdc(usdcRaw.toString());
+      } catch (e) {
+        console.error(e);
+      }
+    };
+    fetchWalletBalances();
+  }, [wagmiAddress, walletAddress]);
+
+  const handleRebalance = async () => {
+    try {
+      const activeAddress: `0x${string}` | undefined = walletAddress ?? wagmiAddress;
+      if (!activeAddress) return;
+      // Ensure we're on Base Sepolia
+      if (chainId && chainId !== baseSepolia.id) {
+        alert("Please switch to Base Sepolia to rebalance.");
+        return;
+      }
+      if (!USDC_ADDRESS || !WETH_ADDRESS || !WETH_FEED_ADDRESS) {
+        alert("Missing NEXT_PUBLIC_* addresses for USDC/WETH tokens or WETH price feed.");
+        return;
+      }
+      // Ensure portfolio exists; if not, create it
+      let upAddr = portfolioAddress;
+      if (!upAddr || upAddr === "0x0000000000000000000000000000000000000000") {
+        const factoryCreateAbi = [
+          { type: "function", name: "createUserPortfolio", stateMutability: "nonpayable", inputs: [], outputs: [] },
+        ] as const;
+        await writeContractAsync({
+          abi: factoryCreateAbi,
+          address: FACTORY_ADDRESS,
+          functionName: "createUserPortfolio",
+          args: [],
+          chainId: baseSepolia.id,
+        });
+        if (publicClient) {
+          const factoryAbi = [
+            { type: "function", name: "getUserPortfolio", stateMutability: "view", inputs: [{ name: "user", type: "address" }], outputs: [{ name: "", type: "address" }] },
+          ] as const;
+          const up = await publicClient.readContract({ abi: factoryAbi, address: FACTORY_ADDRESS, functionName: "getUserPortfolio", args: [activeAddress] });
+          upAddr = (up as string) || "";
+          setPortfolioAddress(upAddr);
+        }
+      }
+      if (!upAddr || upAddr === "0x0000000000000000000000000000000000000000") {
+        alert("Could not get portfolio address.");
+        return;
+      }
+      // Compute BPS from selection
+      const ethBps = Math.round(ethAllocation * 100);
+      const usdcBps = 10000 - ethBps;
+      const userPortfolioAbi = [
+        {
+          type: "function",
+          name: "setPortfolioAllocation",
+          stateMutability: "nonpayable",
+          inputs: [
+            { name: "tokens", type: "address[]" },
+            { name: "bps", type: "uint16[]" },
+            { name: "decimals", type: "uint8[]" },
+            { name: "priceFeeds", type: "address[]" },
+          ],
+          outputs: [],
+        },
+      ] as const;
+      await writeContractAsync({
+        abi: userPortfolioAbi,
+        address: upAddr as `0x${string}`,
+        functionName: "setPortfolioAllocation",
+        args: [
+          [USDC_ADDRESS, WETH_ADDRESS] as `0x${string}`[],
+          [usdcBps, ethBps],
+          [6, 18],
+          [USDC_FEED_ADDRESS, WETH_FEED_ADDRESS] as `0x${string}`[],
+        ],
+        chainId: baseSepolia.id,
+      });
+    } catch (e) {
+      console.error(e);
+      alert("Failed to rebalance. Check console for details.");
     }
   };
 
@@ -520,6 +696,18 @@ function InvestmentDashboard({ strategy, ethAllocation, defaultInvestment, onBac
                 >
                   Withdraw Funds
                 </button>
+
+                {/* Rebalance to target split onchain */}
+                <button
+                  onClick={handleRebalance}
+                  disabled={!(walletAddress || wagmiAddress) || isPending}
+                  className="w-full bg-indigo-600 text-white py-3 px-4 rounded-xl font-medium hover:bg-indigo-700 transition-colors disabled:bg-gray-300 disabled:cursor-not-allowed"
+                >
+                  {isPending || isConfirming ? "Rebalancing…" : "Rebalance to Target"}
+                </button>
+                {error && (
+                  <div className="text-sm text-red-600">{error.message}</div>
+                )}
               </div>
             </div>
 
@@ -528,6 +716,24 @@ function InvestmentDashboard({ strategy, ethAllocation, defaultInvestment, onBac
               <h3 className="text-lg font-semibold text-gray-900 mb-4">Portfolio Stats</h3>
               
               <div className="space-y-3">
+                {USDC_ADDRESS && (
+                  <div className="flex justify-between">
+                    <span className="text-gray-600">Wallet USDC</span>
+                    <span className="font-medium text-gray-900">{Number(walletUsdcFormatted).toLocaleString()} USDC</span>
+                  </div>
+                )}
+                {USDC_ADDRESS && (
+                  <div className="flex justify-between">
+                    <span className="text-gray-600">Portfolio USDC</span>
+                    <span className="font-medium text-gray-900">{Number(portfolioUsdcFormatted).toLocaleString()} USDC</span>
+                  </div>
+                )}
+                {WETH_ADDRESS && (
+                  <div className="flex justify-between">
+                    <span className="text-gray-600">Portfolio WETH</span>
+                    <span className="font-medium text-gray-900">{Number(portfolioWethFormatted).toLocaleString()} WETH</span>
+                  </div>
+                )}
                 <div className="flex justify-between">
                   <span className="text-gray-600">Strategy</span>
                   <span className="font-medium text-gray-900">{strategy.charAt(0).toUpperCase() + strategy.slice(1)}</span>
@@ -599,6 +805,7 @@ export default function PortfolioFlow({ onBuyUSDC }: { onBuyUSDC?: (amount?: str
       defaultInvestment={defaultInvestment}
       onBack={handleBack}
       onBuyUSDC={onBuyUSDC}
+      walletAddress={undefined}
     />
   );
 }

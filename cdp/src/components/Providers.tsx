@@ -2,6 +2,11 @@
 
 import { type Config } from "@coinbase/cdp-hooks";
 import { CDPReactProvider, type AppConfig } from "@coinbase/cdp-react/components/CDPReactProvider";
+import { createCDPEmbeddedWalletConnector } from "@coinbase/cdp-wagmi";
+import { WagmiProvider, createConfig } from "wagmi";
+import { http } from "viem";
+import { baseSepolia } from "viem/chains";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import { theme } from "@/components/theme";
 
@@ -19,6 +24,27 @@ const APP_CONFIG: AppConfig = {
   authMethods: ["email", "sms"],
 };
 
+// Create a Wagmi connector that bridges CDP Embedded Wallet into wagmi
+const cdpConnector = createCDPEmbeddedWalletConnector({
+  cdpConfig: CDP_CONFIG,
+  providerConfig: {
+    chains: [baseSepolia],
+    transports: {
+      [baseSepolia.id]: http(),
+    },
+  },
+});
+
+const wagmiConfig = createConfig({
+  connectors: [cdpConnector],
+  chains: [baseSepolia],
+  transports: {
+    [baseSepolia.id]: http(),
+  },
+});
+
+const queryClient = new QueryClient();
+
 /**
  * Providers component that wraps the application in all requisite providers
  *
@@ -29,7 +55,11 @@ const APP_CONFIG: AppConfig = {
 export default function Providers({ children }: ProvidersProps) {
   return (
     <CDPReactProvider config={CDP_CONFIG} app={APP_CONFIG} theme={theme}>
-      {children}
+      <WagmiProvider config={wagmiConfig}>
+        <QueryClientProvider client={queryClient}>
+          {children}
+        </QueryClientProvider>
+      </WagmiProvider>
     </CDPReactProvider>
   );
 }
