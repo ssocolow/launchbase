@@ -19,6 +19,10 @@ contract DeployScript is Script {
         address usdcAddress = vm.envAddress("USDC_ADDRESS");
         address usdcPriceFeed = vm.envAddress("USDC_PRICE_FEED");
         
+        // Debug: Print the addresses to see what's being read
+        console.log("USDC Address:", usdcAddress);
+        console.log("USDC Price Feed:", usdcPriceFeed);
+        
         vm.startBroadcast(deployerPrivateKey);
         
         PortfolioFactory factory = new PortfolioFactory(
