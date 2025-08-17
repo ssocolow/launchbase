@@ -4,7 +4,7 @@ import { useState } from "react";
 import StrategyInsights from "@/components/StrategyInsights";
 import PortfolioDashboard from "@/components/PortfolioDashboard";
 import { useEvmAddress } from "@coinbase/cdp-hooks";
-import { getOnrampBuyUrl } from '@coinbase/onchainkit/fund';
+ 
 
 /**
  * Portfolio Rebalancer UI adapted from app/portfolio.tsx
@@ -24,16 +24,45 @@ export default function PortfolioRebalancer() {
   const hasEnoughBalance = false;
 
 
-  const projectId = 'bdd4fdee-3ed6-48c5-b600-253b5923164d';
-  const onrampBuyUrl = getOnrampBuyUrl({
-    projectId,
-    addresses: { '0x1': ['base'] },
-    assets: ['USDC'],
-    presetFiatAmount: 20,
-    fiatCurrency: 'USD',
-    redirectUrl: 'http://localhost:3000?param=bought',
-  });
-  console.log(onrampBuyUrl);
+  // Call our backend /quote endpoint which returns a ready-to-open Onramp URL
+  const getOnrampUrlFromServer = async (): Promise<string> => {
+    if (!evmAddress) throw new Error('Wallet address is required');
+    const response = await fetch('http://localhost:3007/quote', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        destination_address: evmAddress,
+        // Optional: pass amount/currency if server supports it
+        payment_amount: depositAmount || undefined,
+        payment_currency: 'USD',
+        payment_method: 'CARD',
+        country: 'US',
+      }),
+    });
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(`Failed to get quote: ${response.status} ${text}`);
+    }
+    const data: any = await response.json();
+    // Try multiple shapes: top-level and nested under `result` (camelCase and snake_case)
+    const url: string | undefined =
+      data?.buyUrl ||
+      data?.onrampUrl ||
+      data?.onramp_url ||
+      data?.url ||
+      data?.result?.buyUrl ||
+      data?.result?.onrampUrl ||
+      data?.result?.onramp_url ||
+      data?.result?.url;
+    if (!url) throw new Error('Server did not return an onramp URL');
+    // Insert "-sandbox" after "pay" in the URL if present
+    if (typeof url === "string" && url.includes("/pay")) {
+      const newurl = url.replace(/\/pay(\/|$)/, "/pay-sandbox$1") + "&redirectUrl=http://localhost:3000";
+      console.log(newurl);
+      return newurl;
+    }
+    return url;
+  };
 
   const ethPercentage =
     selectedPreset === "custom"
@@ -87,15 +116,15 @@ export default function PortfolioRebalancer() {
     setSelectedPreset("custom");
     setShowSlider(true);
   };
-
-  const handleCoinbaseConnect = async () => {
-    // Auth handled globally via CDP components; keep UI affordance for now
-    console.log("Connecting with Coinbase Embedded Wallet...");
-    alert("Coinbase Embedded Wallet integration in progress...");
-  };
-
-  const handleBuyUSDC = () => {
-    window.open(onrampBuyUrl, "_blank", "width=500,height=700");
+  
+  const handleBuyUSDC = async () => {
+    try {
+      const url = await getOnrampUrlFromServer();
+      window.open(url, "_blank", "width=500,height=700");
+    } catch (e) {
+      console.error(e);
+      alert('Failed to start Onramp flow. Check console for details.');
+    }
   };
 
   const handleCreatePortfolio = () => {
@@ -338,7 +367,7 @@ export default function PortfolioRebalancer() {
                 <div className="flex items-center space-x-3">
                   <div className="w-2 h-2 bg-blue-500 rounded-full"></div>
                   <span className="text-sm text-gray-700">Base chain security</span>
-                </div>
+                  https://api.developer.coinbase.com        </div>
                 <div className="flex items-center space-x-3">
                   <div className="w-2 h-2 bg-purple-500 rounded-full"></div>
                   <span className="text-sm text-gray-700">USDC yield generation</span>
