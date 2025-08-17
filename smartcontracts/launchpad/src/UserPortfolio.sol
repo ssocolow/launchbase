@@ -1,170 +1,12 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-// Minimal Chainlink Aggregator interface inlined to avoid external import issues
-interface AggregatorV3Interface {
-    function decimals() external view returns (uint8);
-    function latestRoundData()
-        external
-        view
-        returns (
-            uint80 roundId,
-            int256 answer,
-            uint256 startedAt,
-            uint256 updatedAt,
-            uint80 answeredInRound
-        );
-}
+import "./Interfaces.sol";
+import "./Libraries.sol";
 
 /**
- * RiskSliderSynthetic
- * - Accepts REAL USDC (pass address at deploy)
- * - Users deposit USDC only
- * - Contract records a virtual WETH leg in *USDC terms* (no real WETH, no swaps)
- * - Withdraw returns USDC only: usdcLedger + wethExposureUsdc
- * - Always solvent: we only ever pay out USDC that was deposited
- *
- * Later: swap the synthetic logic for real Uniswap swaps behind the same function
- * signatures, or add a flag to route to the real router.
+ * Individual user portfolio - each user gets their own
  */
-
-
- /*
- Notes
- EACH USER GETS OWN CONTRACT
-  * - User-specific risk profiles (USDC vs Virtual WETH)
- * - Extensible for future assets
- * - Risk determination done off-chain
- */
-
-interface IERC20 {
-    function balanceOf(address) external view returns (uint256);
-    function allowance(address,address) external view returns (uint256);
-    function approve(address,uint256) external returns (bool);
-    function transfer(address,uint256) external returns (bool);
-    function transferFrom(address,address,uint256) external returns (bool);
-    function decimals() external view returns (uint8);
-}
-
-library SafeERC20 {
-    function safeTransfer(IERC20 t, address to, uint256 amt) internal {
-        require(t.transfer(to, amt), "TRANSFER_FAIL");
-    }
-    function safeTransferFrom(IERC20 t, address from, address to, uint256 amt) internal {
-        require(t.transferFrom(from, to, amt), "TRANSFERFROM_FAIL");
-    }
-    function safeApprove(IERC20 t, address sp, uint256 amt) internal {
-        require(t.approve(sp, amt), "APPROVE_FAIL");
-    }
-}
- //basically a middleware lock to prevent reentrancy
-abstract contract ReentrancyGuard {
-    uint256 private _status = 1;
-    modifier nonReentrant() {
-        require(_status == 1, "REENTRANT");
-        _status = 2;
-        _;
-        _status = 1;
-    }
-}
-
-// Minimal Uniswap V3 router interface for exactInput
-interface IUniswapV3Router {
-    struct ExactInputParams {
-        bytes path;               // encoded path: tokenIn, fee, tokenOut, ... ending in USDC
-        address recipient;        // recipient of output tokens
-        uint256 deadline;         // unix timestamp deadline
-        uint256 amountIn;         // amount of tokenIn to swap
-        uint256 amountOutMinimum; // slippage control
-    }
-
-    function exactInput(ExactInputParams calldata params) external payable returns (uint256 amountOut);
-}
-
-// Factory contract - deploys individual user contracts
-contract PortfolioFactory {
-    IERC20 public immutable USDC;
-    address public immutable usdcPriceFeed;
-    address public immutable wethPriceFeed;
-    address public immutable defaultUniswapRouter;
-    address public owner;
-    mapping(address => address) public userContracts;
-    mapping(uint256 => address) public defaultAssetToken;
-    // Separate default paths per asset
-    mapping(uint256 => bytes) public defaultAssetBuyPath;  // USDC -> Asset
-    mapping(uint256 => bytes) public defaultAssetSellPath; // Asset -> USDC
-    uint256[] public configuredAssetIds;
-    mapping(uint256 => bool) private isConfiguredAssetId;
-    
-    event UserPortfolioCreated(address indexed user, address contractAddress);
-    event DefaultAssetConfigSet(uint256 indexed assetId, address token, bytes buyPath, bytes sellPath);
-    
-    modifier onlyOwner() { require(msg.sender == owner, "ONLY_OWNER"); _; }
-    
-    constructor(address _usdc, address _usdcPriceFeed, address _wethPriceFeed, address _uniswapRouter) {
-        require(_usdc != address(0), "BAD_USDC");
-        require(_uniswapRouter != address(0), "BAD_ROUTER");
-        USDC = IERC20(_usdc);
-        usdcPriceFeed = _usdcPriceFeed;
-        wethPriceFeed = _wethPriceFeed;
-        defaultUniswapRouter = _uniswapRouter;
-        owner = msg.sender;
-    }
-    
-    /// Create a new portfolio for the calling user
-    function createUserPortfolio() external {
-        require(userContracts[msg.sender] == address(0), "EXISTS");
-        
-        // Prepare defaults arrays from factory configuration
-        uint256 cfgLen = configuredAssetIds.length;
-        uint256[] memory assetIds = new uint256[](cfgLen);
-        address[] memory tokens = new address[](cfgLen);
-        bytes[] memory buyPaths = new bytes[](cfgLen);
-        bytes[] memory sellPaths = new bytes[](cfgLen);
-        for (uint256 i = 0; i < cfgLen; i++) {
-            uint256 aId = configuredAssetIds[i];
-            assetIds[i] = aId;
-            tokens[i] = defaultAssetToken[aId];
-            buyPaths[i] = defaultAssetBuyPath[aId];
-            sellPaths[i] = defaultAssetSellPath[aId];
-        }
-
-        UserPortfolio userPortfolio = new UserPortfolio(
-            address(USDC),
-            msg.sender,
-            usdcPriceFeed,
-            wethPriceFeed,
-            defaultUniswapRouter,
-            assetIds,
-            tokens,
-            buyPaths,
-            sellPaths
-        );
-        userContracts[msg.sender] = address(userPortfolio);
-        
-        emit UserPortfolioCreated(msg.sender, address(userPortfolio));
-    }
-    
-    /// Owner can set default token and BOTH paths for an assetId (used to pre-seed user portfolios)
-    function setDefaultAssetConfig(uint256 assetId, address token, bytes calldata buyPath, bytes calldata sellPath) external onlyOwner {
-        require(token != address(0), "BAD_TOKEN");
-        defaultAssetToken[assetId] = token;
-        defaultAssetBuyPath[assetId] = buyPath;   // allow empty path; user contract may skip if empty
-        defaultAssetSellPath[assetId] = sellPath; // allow empty path; user contract may skip if empty
-        if (!isConfiguredAssetId[assetId]) {
-            isConfiguredAssetId[assetId] = true;
-            configuredAssetIds.push(assetId);
-        }
-        emit DefaultAssetConfigSet(assetId, token, buyPath, sellPath);
-    }
-
-    /// Get user's portfolio address
-    function getUserPortfolio(address user) external view returns (address) {
-        return userContracts[user];
-    }
-}
-
-// Individual user portfolio - each user gets their own
 contract UserPortfolio is ReentrancyGuard {
     using SafeERC20 for IERC20;
 
@@ -211,8 +53,6 @@ contract UserPortfolio is ReentrancyGuard {
     event SwapAllAssetsToUsdcRequested(address indexed user); // future real swap
 
     // Only that specific user can call these functions
-
-    // TODO: confirm this is OK in the frontend, i.e. we will always be logged into that user account when we call it.
     modifier onlyUser() { require(msg.sender == user, "ONLY_USER"); _; }
 
     constructor(
@@ -561,16 +401,4 @@ contract UserPortfolio is ReentrancyGuard {
     ) external onlyUser nonReentrant {
         _rebalanceWithPaths(sellPaths, sellAmountOutMinimums, buyPaths, buyAmountOutMinimums);
     }
-
 }
-
-
-/*
-Assumptions
-- Single deposit (assume fixed package, no changes in bps)
-- Single withdrawal
-- infrequent rebalancing (just once or twice for the demo.)
-- Sequential function call (no withdrawal during processing deposit)
-- Asset IDs, for now just USDC and WETH, but future easy to add more.
-- Each user gets their own contract (no shared pool)
-*/

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import "../../src/base.sol";
+import "../../src/Interfaces.sol";
 
 contract MockUSDC is IERC20 {
     string public name = "Mock USDC";
