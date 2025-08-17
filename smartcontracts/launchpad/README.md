@@ -73,5 +73,5 @@ Copy the `.env.example` file
 Run the following:
 
 ```
-forge script script/Deploy.s.sol:DeployScript --rpc-url https://sepolia.base.org --broadcast --verify --private-key $PRIVATE_KEY
+forge script script/Deploy.s.sol:DeployScript --rpc-url https://sepolia.base.org --broadcast --verify
 ```

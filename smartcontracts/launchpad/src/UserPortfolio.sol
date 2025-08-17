@@ -45,7 +45,6 @@ contract UserPortfolio is ReentrancyGuard {
         user = _user;
         usdcDec = IERC20(_usdc).decimals();
 
-        // Validate USDC price feed
         require(_usdcPriceFeed != address(0), "BAD_USDC_FEED");
     }
 
