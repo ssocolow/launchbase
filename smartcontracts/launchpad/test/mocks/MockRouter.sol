@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import "../../src/base.sol"; // for IUniswapV3Router interface
+import "../../src/Interfaces.sol"; // for IUniswapV3Router interface
 
 interface IERC20Like {
     function balanceOf(address) external view returns (uint256);

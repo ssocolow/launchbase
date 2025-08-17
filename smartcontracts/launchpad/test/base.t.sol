@@ -2,7 +2,9 @@
 pragma solidity ^0.8.24;
 
 import "forge-std/Test.sol";
-import "../src/base.sol";
+import "../src/Interfaces.sol";
+import "../src/PortfolioFactory.sol";
+import "../src/UserPortfolio.sol";
 import "./mocks/MockUSDC.sol";
 import "./mocks/MockWETH.sol";
 import "./mocks/MockRouter.sol";
