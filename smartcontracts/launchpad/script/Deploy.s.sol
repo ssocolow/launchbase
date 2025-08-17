@@ -18,16 +18,19 @@ contract DeployScript is Script {
         // Base Sepolia addresses
         address usdcAddress = vm.envAddress("USDC_ADDRESS");
         address usdcPriceFeed = vm.envAddress("USDC_PRICE_FEED");
+        address uniswapRouter = vm.envAddress("UNISWAP_V3_ROUTER");
         
         // Debug: Print the addresses to see what's being read
         console.log("USDC Address:", usdcAddress);
         console.log("USDC Price Feed:", usdcPriceFeed);
+        console.log("Uniswap V3 Router:", uniswapRouter);
         
         vm.startBroadcast(deployerPrivateKey);
         
         PortfolioFactory factory = new PortfolioFactory(
             usdcAddress,
-            usdcPriceFeed
+            usdcPriceFeed,
+            uniswapRouter
         );
         
         console.log("PortfolioFactory deployed at:", address(factory));

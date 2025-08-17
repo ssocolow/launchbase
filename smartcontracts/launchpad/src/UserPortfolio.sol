@@ -16,6 +16,9 @@ contract UserPortfolio is ReentrancyGuard {
     uint8 public immutable usdcDec;
     uint16 public constant MAX_BPS = 10_000;
     uint8 public constant PRICE_DECIMALS = 8;
+    
+    // Uniswap V3 Router for swaps
+    ISwapRouter public immutable swapRouter;
 
     struct PortfolioAllocation {
         address token;         // Token address
@@ -38,11 +41,13 @@ contract UserPortfolio is ReentrancyGuard {
 
     constructor(
         address _usdc,
-        address _user
+        address _user,
+        address _swapRouter
     ) {
         USDC = IERC20(_usdc);
         user = _user;
         usdcDec = IERC20(_usdc).decimals();
+        swapRouter = ISwapRouter(_swapRouter);
     }
 
     /* ---------------- Core Functions ---------------- */
@@ -103,6 +108,44 @@ contract UserPortfolio is ReentrancyGuard {
         SafeERC20.safeTransfer(USDC, user, usdcBalance);
         
         emit Withdraw(user, usdcBalance);
+    }
+
+    function rebalance() external nonReentrant {
+        uint256 usdcBalance = USDC.balanceOf(address(this));
+        require(usdcBalance > 0, "NO_BALANCE");
+        require(portfolio.length > 0, "NO_ALLOCATION");
+        
+        // For each token in portfolio, swap USDC to achieve target allocation
+        for (uint i = 0; i < portfolio.length; i++) {
+            PortfolioAllocation memory allocation = portfolio[i];
+            
+            // Skip USDC (no swap needed)
+            if (allocation.token == address(USDC)) {
+                continue;
+            }
+            
+            // Calculate target amount for this token
+            uint256 targetAmount = (usdcBalance * allocation.bps) / MAX_BPS;
+            
+            // Check current balance of this token
+            uint256 currentBalance = IERC20(allocation.token).balanceOf(address(this));
+            
+            // If we need more of this token, swap USDC for it
+            if (currentBalance < targetAmount) {
+                uint256 usdcToSwap = targetAmount - currentBalance;
+                
+                // Use exactInputSingle to swap USDC for the target token
+                swapExactInputSingle(
+                    address(USDC),
+                    allocation.token,
+                    500, // 0.05% fee tier
+                    usdcToSwap,
+                    0 // No slippage protection for simplicity
+                );
+            }
+        }
+        
+        emit PortfolioRebalanced(user);
     }
 
     /* ---------------- View Functions ---------------- */
@@ -166,7 +209,7 @@ contract UserPortfolio is ReentrancyGuard {
             finalValue = (assetUnits * price * (10 ** usdcDec)) / (10 ** (allocation.decimals + PRICE_DECIMALS));
         }
     }
-    
+
     /* ---------------- Internal Helpers ---------------- */
 
     function _getAssetPrice(address priceFeed) internal view returns (uint256) {
@@ -183,6 +226,81 @@ contract UserPortfolio is ReentrancyGuard {
             return uint256(price) / (10**(oracleDecimals - PRICE_DECIMALS));
         } else {
             return uint256(price) * (10**(PRICE_DECIMALS - oracleDecimals));
+        }
+    }
+
+    /// @notice swapExactInputSingle swaps a fixed amount of tokenIn for a maximum possible amount of tokenOut
+    /// @param tokenIn The token being swapped in
+    /// @param tokenOut The token being swapped out
+    /// @param fee The fee tier of the pool
+    /// @param amountIn The exact amount of tokenIn that will be swapped for tokenOut
+    /// @param amountOutMinimum The minimum amount of tokenOut to receive
+    /// @return amountOut The amount of tokenOut received
+    function swapExactInputSingle(
+        address tokenIn,
+        address tokenOut,
+        uint24 fee,
+        uint256 amountIn,
+        uint256 amountOutMinimum
+    ) public returns (uint256 amountOut) {
+        // Approve the router to spend tokenIn
+        TransferHelper.safeApprove(tokenIn, address(swapRouter), amountIn);
+
+        // Create the swap parameters
+        ISwapRouter.ExactInputSingleParams memory params =
+            ISwapRouter.ExactInputSingleParams({
+                tokenIn: tokenIn,
+                tokenOut: tokenOut,
+                fee: fee,
+                recipient: address(this),
+                deadline: block.timestamp + 300, // 5 minute deadline
+                amountIn: amountIn,
+                amountOutMinimum: amountOutMinimum,
+                sqrtPriceLimitX96: 0
+            });
+
+        // Execute the swap
+        amountOut = swapRouter.exactInputSingle(params);
+    }
+
+    /// @notice swapExactOutputSingle swaps a minimum possible amount of tokenIn for a fixed amount of tokenOut
+    /// @param tokenIn The token being swapped in
+    /// @param tokenOut The token being swapped out
+    /// @param fee The fee tier of the pool
+    /// @param amountOut The exact amount of tokenOut to receive
+    /// @param amountInMaximum The maximum amount of tokenIn we are willing to spend
+    /// @return amountIn The amount of tokenIn actually spent
+    function swapExactOutputSingle(
+        address tokenIn,
+        address tokenOut,
+        uint24 fee,
+        uint256 amountOut,
+        uint256 amountInMaximum
+    ) public returns (uint256 amountIn) {
+        // Approve the router to spend the maximum amount of tokenIn
+        TransferHelper.safeApprove(tokenIn, address(swapRouter), amountInMaximum);
+
+        // Create the swap parameters
+        ISwapRouter.ExactOutputSingleParams memory params =
+            ISwapRouter.ExactOutputSingleParams({
+                tokenIn: tokenIn,
+                tokenOut: tokenOut,
+                fee: fee,
+                recipient: address(this),
+                deadline: block.timestamp + 300, // 5 minute deadline
+                amountOut: amountOut,
+                amountInMaximum: amountInMaximum,
+                sqrtPriceLimitX96: 0
+            });
+
+        // Execute the swap
+        amountIn = swapRouter.exactOutputSingle(params);
+
+        // For exact output swaps, the amountInMaximum may not have all been spent
+        // If the actual amount spent (amountIn) is less than the specified maximum amount, we must refund and approve 0
+        if (amountIn < amountInMaximum) {
+            TransferHelper.safeApprove(tokenIn, address(swapRouter), 0);
+            TransferHelper.safeTransfer(tokenIn, address(this), amountInMaximum - amountIn);
         }
     }
 }

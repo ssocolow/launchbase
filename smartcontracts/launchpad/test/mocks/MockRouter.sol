@@ -17,7 +17,7 @@ interface FeedLike {
     function decimals() external view returns (uint8);
 }
 
-contract MockV3Router is IUniswapV3Router {
+contract MockV3Router is ISwapRouter {
     address public immutable USDC;
     address public immutable WETH;
     FeedLike public immutable usdcFeed;
@@ -27,30 +27,20 @@ contract MockV3Router is IUniswapV3Router {
         USDC = _usdc; WETH = _weth; usdcFeed = FeedLike(_usdcFeed); wethFeed = FeedLike(_wethFeed);
     }
 
-    function exactInput(ExactInputParams calldata params) external payable returns (uint256 amountOut) {
-        // Decode single-hop path: tokenIn (20) | fee (3) | tokenOut (20)
-        require(params.path.length == 20 + 3 + 20, "ONLY_SINGLE_HOP");
-        bytes memory p = params.path;
-        address tokenIn;
-        address tokenOut;
-        assembly {
-            tokenIn := shr(96, mload(add(p, 32)))
-            tokenOut := shr(96, mload(add(p, 55)))
-        }
-        require(tokenIn == USDC || tokenIn == WETH, "BAD_IN");
-        require(tokenOut == USDC || tokenOut == WETH, "BAD_OUT");
-        require(tokenIn != tokenOut, "SAME_TOKEN");
+    function exactInputSingle(ExactInputSingleParams calldata params) external payable returns (uint256 amountOut) {
+        require(params.tokenIn == USDC || params.tokenIn == WETH, "BAD_IN");
+        require(params.tokenOut == USDC || params.tokenOut == WETH, "BAD_OUT");
+        require(params.tokenIn != params.tokenOut, "SAME_TOKEN");
 
         // Pull tokenIn from caller (portfolio contract)
-        IERC20Like tokenInCtr = IERC20Like(tokenIn);
-        IERC20Like tokenOutCtr = IERC20Like(tokenOut);
+        IERC20Like tokenInCtr = IERC20Like(params.tokenIn);
+        IERC20Like tokenOutCtr = IERC20Like(params.tokenOut);
         require(tokenInCtr.transferFrom(msg.sender, address(this), params.amountIn), "PULL_FAIL");
 
         // Price ratio using feeds: amountOut = amountIn * priceIn / priceOut, normalized to token decimals
-        (, int256 pIn,,,) = (tokenIn == USDC) ? usdcFeed.latestRoundData() : wethFeed.latestRoundData();
-        (, int256 pOut,,,) = (tokenOut == USDC) ? usdcFeed.latestRoundData() : wethFeed.latestRoundData();
+        (, int256 pIn,,,) = (params.tokenIn == USDC) ? usdcFeed.latestRoundData() : wethFeed.latestRoundData();
+        (, int256 pOut,,,) = (params.tokenOut == USDC) ? usdcFeed.latestRoundData() : wethFeed.latestRoundData();
         require(pIn > 0 && pOut > 0, "BAD_PRICE");
-        uint8 pfDec = usdcFeed.decimals(); // assume both feeds share decimals
         uint8 dIn = tokenInCtr.decimals();
         uint8 dOut = tokenOutCtr.decimals();
 
@@ -62,5 +52,37 @@ contract MockV3Router is IUniswapV3Router {
         require(tokenOutCtr.transfer(params.recipient, amountOut), "PAY_OUT_FAIL");
 
         return amountOut;
+    }
+
+    function exactOutputSingle(ExactOutputSingleParams calldata params) external payable returns (uint256 amountIn) {
+        require(params.tokenIn == USDC || params.tokenIn == WETH, "BAD_IN");
+        require(params.tokenOut == USDC || params.tokenOut == WETH, "BAD_OUT");
+        require(params.tokenIn != params.tokenOut, "SAME_TOKEN");
+
+        // Pull tokenIn from caller (portfolio contract)
+        IERC20Like tokenInCtr = IERC20Like(params.tokenIn);
+        IERC20Like tokenOutCtr = IERC20Like(params.tokenOut);
+        require(tokenInCtr.transferFrom(msg.sender, address(this), params.amountInMaximum), "PULL_FAIL");
+
+        // Price ratio using feeds: amountIn = amountOut * priceOut / priceIn, normalized to token decimals
+        (, int256 pIn,,,) = (params.tokenIn == USDC) ? usdcFeed.latestRoundData() : wethFeed.latestRoundData();
+        (, int256 pOut,,,) = (params.tokenOut == USDC) ? usdcFeed.latestRoundData() : wethFeed.latestRoundData();
+        require(pIn > 0 && pOut > 0, "BAD_PRICE");
+        uint8 dIn = tokenInCtr.decimals();
+        uint8 dOut = tokenOutCtr.decimals();
+
+        // Normalize to compute: in = amountOut * priceOut * 10^dIn / (priceIn * 10^dOut)
+        amountIn = (params.amountOut * uint256(pOut) * (10 ** dIn)) / (uint256(pIn) * (10 ** dOut));
+        require(amountIn <= params.amountInMaximum, "EXCEEDS_MAX");
+
+        // Send tokenOut to the recipient
+        require(tokenOutCtr.transfer(params.recipient, params.amountOut), "PAY_OUT_FAIL");
+
+        // Refund excess tokenIn if needed
+        if (amountIn < params.amountInMaximum) {
+            require(tokenInCtr.transfer(msg.sender, params.amountInMaximum - amountIn), "REFUND_FAIL");
+        }
+
+        return amountIn;
     }
 } 
