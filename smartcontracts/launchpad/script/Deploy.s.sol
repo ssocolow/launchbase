@@ -18,16 +18,19 @@ contract DeployScript is Script {
         // Base Sepolia addresses
         address usdcAddress = vm.envAddress("USDC_ADDRESS");
         address usdcPriceFeed = vm.envAddress("USDC_PRICE_FEED");
+        address liquidityVault = vm.envAddress("LIQUIDITY_VAULT");
         
         // Debug: Print the addresses to see what's being read
         console.log("USDC Address:", usdcAddress);
         console.log("USDC Price Feed:", usdcPriceFeed);
+        console.log("Liquidity Vault:", liquidityVault);
         
         vm.startBroadcast(deployerPrivateKey);
         
         PortfolioFactory factory = new PortfolioFactory(
             usdcAddress,
-            usdcPriceFeed
+            usdcPriceFeed,
+            liquidityVault
         );
         
         console.log("PortfolioFactory deployed at:", address(factory));

@@ -16,6 +16,14 @@ interface AggregatorV3Interface {
         );
 }
 
+// LiquidityVault interface for fixed-rate swaps
+interface ILiquidityVault {
+    function swapExactWETHForUSDCFixed(uint256 wethIn, address recipient) external returns (uint256 usdcOut);
+    function requestWETH(uint256 amount) external;
+    function USDC() external view returns (address);
+    function WETH() external view returns (address);
+}
+
 interface IERC20 {
     function balanceOf(address) external view returns (uint256);
     function allowance(address,address) external view returns (uint256);

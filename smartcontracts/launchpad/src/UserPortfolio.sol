@@ -16,7 +16,7 @@ contract UserPortfolio is ReentrancyGuard {
     uint8 public immutable usdcDec;
     uint16 public constant MAX_BPS = 10_000;
     uint8 public constant PRICE_DECIMALS = 8;
-    address public swapRouter;
+    address public liquidityVault;
 
     struct PortfolioAllocation {
         address token;         // Token address
@@ -34,18 +34,19 @@ contract UserPortfolio is ReentrancyGuard {
     event PortfolioAllocationSet(address indexed user, address[] tokens, uint16[] bps);
     event Withdraw(address indexed user, uint256 usdcAmount);
     event PortfolioRebalanced(address indexed user);
+    event ETHPriceIncreaseSimulated(address indexed user, uint256 wethAmount);
 
     modifier onlyUser() { require(msg.sender == user, "ONLY_USER"); _; }
 
     constructor(
         address _usdc,
         address _user,
-        address _swapRouter
+        address _liquidityVault
     ) {
         USDC = IERC20(_usdc);
         user = _user;
         usdcDec = IERC20(_usdc).decimals();
-        swapRouter = _swapRouter;
+        liquidityVault = _liquidityVault;
     }
 
     /* ---------------- Core Functions ---------------- */
@@ -108,40 +109,39 @@ contract UserPortfolio is ReentrancyGuard {
         emit Withdraw(user, usdcBalance);
     }
 
+    /// Demo: Simulate ETH price increase by requesting WETH from LiquidityVault
+    /// This represents the portfolio gaining value due to ETH price appreciation
+    function simulateETHPriceIncrease(uint256 wethAmount) external onlyUser {
+        require(liquidityVault != address(0), "NO_VAULT");
+        require(wethAmount > 0, "ZERO_AMOUNT");
+        
+        // Request WETH from LiquidityVault (simulates ETH price going up)
+        ILiquidityVault(liquidityVault).requestWETH(wethAmount);
+        
+        // The WETH is now in this portfolio, representing increased ETH value
+        emit ETHPriceIncreaseSimulated(user, wethAmount);
+    }
+
     function rebalance() external nonReentrant {
         
         require(portfolio.length > 0, "no target");
-        require(swapRouter != address(0), "NO_ROUTER"); // Router is needed for swaps
+        require(liquidityVault != address(0), "NO_VAULT");
 
-        /// Convert all Assets into USDC
+        // Demo: Convert all non-USDC assets to USDC using LiquidityVault
         for (uint i = 0; i < portfolio.length; i++) {
             address token = portfolio[i].token;
             if (token == address(0) || token == address(USDC)) continue; // Skip zero address and USDC itself
             uint256 bal = IERC20(token).balanceOf(address(this));
             if (bal == 0) continue;
 
-            SafeERC20.safeApprove(IERC20(token), swapRouter, bal);
-            // Note: Actual swap implementation would go here
-            // For now, this is a placeholder - implement based on your router interface
-            // Example: router.swapExactTokensForTokens(token, address(WETH), bal, address(this));
+            // Demo: For WETH, use LiquidityVault's fixed-rate swap
+            if (token == ILiquidityVault(liquidityVault).WETH()) {
+                SafeERC20.safeApprove(IERC20(token), liquidityVault, bal);
+                ILiquidityVault(liquidityVault).swapExactWETHForUSDCFixed(bal, address(this));
+            }
         }
  
-        uint256 usdcBalance = USDC.balanceOf(address(this));
-        
-        for (uint i = 0; i < portfolio.length; i++) {
-            address token = portfolio[i].token;
-            uint16 bps = portfolio[i].bps;
-
-            if (token == address(USDC)) continue;
-
-            uint256 targetUsdcAmt = (usdcBalance * bps) / MAX_BPS;
-            if (targetUsdcAmt == 0) continue;
-
-            SafeERC20.safeApprove(USDC, swapRouter, targetUsdcAmt);
-            // Note: Actual swap implementation would go here
-            // uint256 out = router.swapExact(address(USDC), token, targetUsdcAmt, address(this));
-        }
-
+        // Update timestamps to show rebalancing occurred
         for (uint i = 0; i < portfolio.length; i++) {
             portfolio[i].lastEdited = block.timestamp;
         }
