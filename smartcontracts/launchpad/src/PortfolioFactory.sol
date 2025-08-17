@@ -10,6 +10,7 @@ import "./UserPortfolio.sol";
 contract PortfolioFactory {
     IERC20 public immutable USDC;
     address public immutable usdcPriceFeed;
+    address public immutable swapRouter;
     address public owner;
     mapping(address => address) public userContracts;
     
@@ -17,10 +18,11 @@ contract PortfolioFactory {
     
     modifier onlyOwner() { require(msg.sender == owner, "ONLY_OWNER"); _; }
     
-    constructor(address _usdc, address _usdcPriceFeed) {
+    constructor(address _usdc, address _usdcPriceFeed, address _swapRouter) {
         require(_usdc != address(0), "BAD_USDC");
         USDC = IERC20(_usdc);
         usdcPriceFeed = _usdcPriceFeed;
+        swapRouter = _swapRouter;
         owner = msg.sender;
     }
     
@@ -30,7 +32,8 @@ contract PortfolioFactory {
 
         UserPortfolio userPortfolio = new UserPortfolio(
             address(USDC),
-            msg.sender
+            msg.sender,
+            swapRouter
         );
         userContracts[msg.sender] = address(userPortfolio);
         

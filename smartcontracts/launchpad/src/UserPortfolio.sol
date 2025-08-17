@@ -16,6 +16,7 @@ contract UserPortfolio is ReentrancyGuard {
     uint8 public immutable usdcDec;
     uint16 public constant MAX_BPS = 10_000;
     uint8 public constant PRICE_DECIMALS = 8;
+    address public swapRouter;
 
     struct PortfolioAllocation {
         address token;         // Token address
@@ -38,11 +39,13 @@ contract UserPortfolio is ReentrancyGuard {
 
     constructor(
         address _usdc,
-        address _user
+        address _user,
+        address _swapRouter
     ) {
         USDC = IERC20(_usdc);
         user = _user;
         usdcDec = IERC20(_usdc).decimals();
+        swapRouter = _swapRouter;
     }
 
     /* ---------------- Core Functions ---------------- */
@@ -103,6 +106,47 @@ contract UserPortfolio is ReentrancyGuard {
         SafeERC20.safeTransfer(USDC, user, usdcBalance);
         
         emit Withdraw(user, usdcBalance);
+    }
+
+    function rebalance() external nonReentrant {
+        
+        require(portfolio.length > 0, "no target");
+        require(swapRouter != address(0), "NO_ROUTER"); // Router is needed for swaps
+
+        /// Convert all Assets into USDC
+        for (uint i = 0; i < portfolio.length; i++) {
+            address token = portfolio[i].token;
+            if (token == address(0) || token == address(USDC)) continue; // Skip zero address and USDC itself
+            uint256 bal = IERC20(token).balanceOf(address(this));
+            if (bal == 0) continue;
+
+            SafeERC20.safeApprove(IERC20(token), swapRouter, bal);
+            // Note: Actual swap implementation would go here
+            // For now, this is a placeholder - implement based on your router interface
+            // Example: router.swapExactTokensForTokens(token, address(WETH), bal, address(this));
+        }
+ 
+        uint256 usdcBalance = USDC.balanceOf(address(this));
+        
+        for (uint i = 0; i < portfolio.length; i++) {
+            address token = portfolio[i].token;
+            uint16 bps = portfolio[i].bps;
+
+            if (token == address(USDC)) continue;
+
+            uint256 targetUsdcAmt = (usdcBalance * bps) / MAX_BPS;
+            if (targetUsdcAmt == 0) continue;
+
+            SafeERC20.safeApprove(USDC, swapRouter, targetUsdcAmt);
+            // Note: Actual swap implementation would go here
+            // uint256 out = router.swapExact(address(USDC), token, targetUsdcAmt, address(this));
+        }
+
+        for (uint i = 0; i < portfolio.length; i++) {
+            portfolio[i].lastEdited = block.timestamp;
+        }
+
+        emit PortfolioRebalanced(user);
     }
 
     /* ---------------- View Functions ---------------- */
