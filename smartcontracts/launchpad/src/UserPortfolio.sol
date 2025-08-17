@@ -39,16 +39,14 @@ contract UserPortfolio is ReentrancyGuard {
     constructor(
         address _usdc,
         address _user,
-        address _usdcPriceFeed,
-        address _wethPriceFeed
+        address _usdcPriceFeed
     ) {
         USDC = IERC20(_usdc);
         user = _user;
         usdcDec = IERC20(_usdc).decimals();
 
-        // Set price feeds
+        // Validate USDC price feed
         require(_usdcPriceFeed != address(0), "BAD_USDC_FEED");
-        require(_wethPriceFeed != address(0), "BAD_WETH_FEED");
     }
 
     /* ---------------- Core Functions ---------------- */
