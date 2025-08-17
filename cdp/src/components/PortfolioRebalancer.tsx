@@ -126,22 +126,10 @@ export default function PortfolioRebalancer() {
       alert('Failed to start Onramp flow. Check console for details.');
     }
   };
-
-  return (
-    <div className="w-full">
-      {/* New Sleek Portfolio Flow */}
-      <PortfolioDashboard />
-
-      
-      {/* Keep Buy USDC functionality available */}
-      <div className="fixed bottom-4 right-4">
-        <button
-          onClick={handleBuyUSDC}
-          className="bg-emerald-600 text-white px-4 py-2 rounded-lg font-medium hover:bg-emerald-700 transition-colors shadow-lg"
-        >
-          Buy USDC
-        </button>
-      </div>
-    </div>
-  );
+ 
+     return (
+  <div className="w-full">
+    <PortfolioDashboard />
+  </div>
+);
 }
