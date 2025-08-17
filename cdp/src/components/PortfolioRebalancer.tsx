@@ -129,7 +129,8 @@ export default function PortfolioRebalancer() {
  
      return (
   <div className="w-full">
-    <PortfolioDashboard onBuyUSDC={handleBuyUSDC} />
+    {/* @ts-expect-error extending props to pass walletAddress */}
+    <PortfolioDashboard onBuyUSDC={handleBuyUSDC} walletAddress={evmAddress as `0x${string}` | undefined} />
   </div>
 );
 }
