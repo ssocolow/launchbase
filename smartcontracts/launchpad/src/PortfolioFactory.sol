@@ -30,8 +30,7 @@ contract PortfolioFactory {
 
         UserPortfolio userPortfolio = new UserPortfolio(
             address(USDC),
-            msg.sender,
-            usdcPriceFeed
+            msg.sender
         );
         userContracts[msg.sender] = address(userPortfolio);
         

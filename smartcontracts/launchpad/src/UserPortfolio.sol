@@ -38,14 +38,11 @@ contract UserPortfolio is ReentrancyGuard {
 
     constructor(
         address _usdc,
-        address _user,
-        address _usdcPriceFeed
+        address _user
     ) {
         USDC = IERC20(_usdc);
         user = _user;
         usdcDec = IERC20(_usdc).decimals();
-
-        require(_usdcPriceFeed != address(0), "BAD_USDC_FEED");
     }
 
     /* ---------------- Core Functions ---------------- */
@@ -111,25 +108,25 @@ contract UserPortfolio is ReentrancyGuard {
     /* ---------------- View Functions ---------------- */
 
     function calculatePortfolioValue() public view returns (uint256 total) {
+        require(portfolio.length > 0, "NO_ALLOCATION");
+        
         uint256 usdcBalance = USDC.balanceOf(address(this));
         total = 0;
         
         for (uint i = 0; i < portfolio.length; i++) {
             PortfolioAllocation memory allocation = portfolio[i];
             
-            if (allocation.token == address(USDC)) {
-                // USDC allocation - direct value
-                total += (usdcBalance * allocation.bps) / MAX_BPS;
-            } else {
-                // Other asset allocation - calculate value in USDC terms
-                uint256 allocationAmount = (usdcBalance * allocation.bps) / MAX_BPS;
-                uint256 price = _getAssetPrice(allocation.priceFeed);
-                
-                // Convert allocation to asset units, then back to USDC value
-                uint256 assetUnits = (allocationAmount * (10 ** allocation.decimals)) / (price * (10 ** usdcDec));
-                total += (assetUnits * price * (10 ** usdcDec)) / (10 ** (allocation.decimals + PRICE_DECIMALS));
-            }
+            uint256 allocationAmount = (usdcBalance * allocation.bps) / MAX_BPS;
+            
+            uint256 price = _getAssetPrice(allocation.priceFeed);
+            
+            uint256 assetUnits = (allocationAmount * (10 ** allocation.decimals)) / (price * (10 ** usdcDec));
+            total += (assetUnits * price * (10 ** usdcDec)) / (10 ** (allocation.decimals + PRICE_DECIMALS));
         }
+    }
+
+    function getPortfolio() external view returns (PortfolioAllocation[] memory) {
+        return portfolio;
     }
     
     /* ---------------- Internal Helpers ---------------- */
