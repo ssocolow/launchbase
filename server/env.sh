@@ -1,0 +1,24 @@
+export BASE_SEPOLIA_RPC_URL=https://sepolia.base.org
+export USDC_ADDRESS=0x036CbD53842c5426634e7929541eC2318f3dCF7e
+export WETH_ADDRESS=0x4200000000000000000000000000000000000006
+export USDC_PRICE_FEED=0xd30e2101a97dcbAeBCBC04F14C3f624E67A35165
+export WETH_PRICE_FEED=0x4aDC67696bA383F43DD60A9e78F2C97Fbbfc7cb1
+export UNISWAP_V3_ROUTER=0x94cC0AaC535CCDB3C01d6787D6413C739ae12bc4
+
+
+#Subject to change, this is the current deployment of the factory scrip
+export FACTORY_CONTRACT=0xf51dca6e84BB6769b3245A11c5d94Ec100634eD2
+
+
+export FEE=10000
+# export BUY_PATH=$(cast abi-encode "f(address,uint24,address)" $USDC 3000 $WETH)
+# export SELL_PATH=$(cast abi-encode "f(address,uint24,address)" $WETH 3000 $USDC)
+
+
+export VAULT_ADDR=0xf71098DAfFD0eD927308c90548940845494AfC1E
+export USDC_AMOUNT=1000000
+
+export USER_CONTRACT=0xbEF79055922D2E7a498CA61ce5041ABc57FdefCD
+export USER_ADDR=$(cast wallet address --private-key 0xc0d137f71aae934848821f3e181dba1bc629bcc92e87134e34eb32f14bd9ec64)
+export PRIVATE_KEY=c0d137f71aae934848821f3e181dba1bc629bcc92e87134e34eb32f14bd9ec64
+export BASE_SEPOLIA_RPC_URL="https://sepolia.base.org"

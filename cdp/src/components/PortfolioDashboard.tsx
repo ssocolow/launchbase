@@ -1,15 +1,74 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { useAccount, useWriteContract, useWaitForTransactionReceipt, usePublicClient } from "wagmi";
+import { useAccount, useWriteContract, useWaitForTransactionReceipt, usePublicClient, useSwitchChain } from "wagmi";
+import { useEvmAddress } from "@coinbase/cdp-hooks";
 import { baseSepolia } from "viem/chains";
-import { formatUnits } from "viem";
+import { formatUnits, parseUnits, maxUint256 } from "viem";
 
 // Strategy Selection Screen (Screen 1)
 function StrategySelection({ onStrategySelect }: { onStrategySelect: (strategy: string, allocation: number) => void }) {
   const [hoveredStrategy, setHoveredStrategy] = useState<string | null>(null);
   const [showCustom, setShowCustom] = useState(false);
   const [customAllocation, setCustomAllocation] = useState(50);
+  const { address: wagmiAddress, chainId } = useAccount();
+  const { evmAddress } = useEvmAddress();
+  const { writeContractAsync } = useWriteContract();
+  const publicClient = usePublicClient();
+  const { switchChainAsync } = useSwitchChain();
+
+  const FACTORY_ADDRESS = (process.env.NEXT_PUBLIC_FACTORY_ADDRESS || "0xe29c701e1222404c04f934b46a2947a1d9126f69") as `0x${string}`;
+  const USDC_ADDRESS = process.env.NEXT_PUBLIC_USDC_ADDRESS as `0x${string}` | undefined;
+  const WETH_ADDRESS = process.env.NEXT_PUBLIC_WETH_ADDRESS as `0x${string}` | undefined;
+  const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000" as `0x${string}`;
+  const USDC_FEED_ADDRESS = (process.env.NEXT_PUBLIC_USDC_FEED as `0x${string}` | undefined) || ZERO_ADDRESS;
+  const WETH_FEED_ADDRESS = process.env.NEXT_PUBLIC_WETH_FEED as `0x${string}` | undefined;
+  const SERVER_URL = process.env.NEXT_PUBLIC_SERVER_URL || "http://localhost:3007";
+
+  const ensureUserPortfolio = async (user: `0x${string}`): Promise<{ address: `0x${string}` | null; created: boolean }> => {
+    try {
+      const resp = await fetch(`${SERVER_URL}/portfolio/by-user/${user}`);
+      if (!resp.ok) return { address: null, created: false };
+      const data = await resp.json();
+      let upAddr: string = data?.result?.portfolioAddress || data?.portfolioAddress || "";
+      if (!upAddr) return { address: null, created: false };
+      let created = false;
+      if (upAddr === ZERO_ADDRESS) {
+        if (!writeContractAsync) return { address: null, created: false };
+        // Ensure wallet is on Base Sepolia before creating portfolio
+        try {
+          if (typeof chainId === 'number' && chainId !== baseSepolia.id && switchChainAsync) {
+            await switchChainAsync({ chainId: baseSepolia.id });
+          }
+        } catch (e) {
+          console.error('[ui][ensurePortfolio] failed to switch network', e);
+          return { address: null, created: false };
+        }
+        const factoryCreateAbi = [
+          { type: "function", name: "createUserPortfolio", stateMutability: "nonpayable", inputs: [], outputs: [] },
+        ] as const;
+        await writeContractAsync({
+          abi: factoryCreateAbi,
+          address: FACTORY_ADDRESS,
+          functionName: "createUserPortfolio",
+          args: [],
+          chainId: baseSepolia.id,
+        });
+        if (publicClient) {
+          const factoryAbi = [
+            { type: "function", name: "getUserPortfolio", stateMutability: "view", inputs: [{ name: "user", type: "address" }], outputs: [{ name: "", type: "address" }] },
+          ] as const;
+          const up = await publicClient.readContract({ abi: factoryAbi, address: FACTORY_ADDRESS, functionName: "getUserPortfolio", args: [user] });
+          upAddr = (up as string) || "";
+        }
+        created = true;
+      }
+      return { address: (upAddr || "") as `0x${string}`, created };
+    } catch (e) {
+      console.error(e);
+      return { address: null, created: false };
+    }
+  };
 
   const strategies = [
     {
@@ -40,6 +99,113 @@ function StrategySelection({ onStrategySelect }: { onStrategySelect: (strategy: 
 
   const handleStrategyClick = (strategy: any) => {
     onStrategySelect(strategy.id, strategy.ethAllocation);
+    (async () => {
+      try {
+        const activeAddress = (wagmiAddress || evmAddress) as `0x${string}` | undefined;
+        if (!activeAddress) {
+          console.warn('[ui][strategy] No wallet address available; aborting');
+          return;
+        }
+        console.log('[ui][strategy] starting flow', { activeAddress, chainId, server: SERVER_URL, selection: strategy });
+        const ensured = await ensureUserPortfolio(activeAddress);
+        const portfolio = ensured?.address as `0x${string}` | null;
+        const createdNow = Boolean(ensured?.created);
+        console.log('[ui][strategy] portfolio lookup result', { portfolio, createdNow });
+        if (!portfolio || portfolio === ZERO_ADDRESS) {
+          console.warn('[ui][strategy] No portfolio address; aborting allocation');
+          return;
+        }
+
+        const ethBps = Math.round(Number(strategy.ethAllocation) * 100);
+        const usdcBps = 10000 - ethBps;
+        if (createdNow) {
+          // Use wagmi to run on-chain actions from the user's embedded wallet
+          try {
+            if (typeof chainId === 'number' && chainId !== baseSepolia.id && switchChainAsync) {
+              await switchChainAsync({ chainId: baseSepolia.id });
+            }
+          } catch (e) {
+            console.error('[ui][strategy] network switch failed', e);
+            return;
+          }
+          // 1) set allocation
+          if (USDC_ADDRESS && WETH_ADDRESS && USDC_FEED_ADDRESS && WETH_FEED_ADDRESS) {
+            try {
+              const userPortfolioAbi = [
+                { type: 'function', name: 'setPortfolioAllocation', stateMutability: 'nonpayable', inputs: [
+                  { name: 'tokens', type: 'address[]' },
+                  { name: 'bps', type: 'uint16[]' },
+                  { name: 'decimals', type: 'uint8[]' },
+                  { name: 'priceFeeds', type: 'address[]' },
+                ], outputs: [] },
+              ] as const;
+              await writeContractAsync({
+                abi: userPortfolioAbi,
+                address: portfolio,
+                functionName: 'setPortfolioAllocation',
+                args: [ [USDC_ADDRESS, WETH_ADDRESS] as `0x${string}`[], [usdcBps, ethBps], [6, 18], [USDC_FEED_ADDRESS, WETH_FEED_ADDRESS] as `0x${string}`[] ],
+                chainId: baseSepolia.id,
+              });
+              console.log('[ui][strategy] wagmi setPortfolioAllocation sent');
+            } catch (e) {
+              console.error('[ui][strategy] wagmi setPortfolioAllocation failed', e);
+            }
+          }
+          // 2) approve USDC max to portfolio
+          if (USDC_ADDRESS) {
+            try {
+              const erc20Abi = [
+                { type: 'function', name: 'approve', stateMutability: 'nonpayable', inputs: [ { name: 'spender', type: 'address' }, { name: 'amount', type: 'uint256' } ], outputs: [ { name: '', type: 'bool' } ] },
+              ] as const;
+              await writeContractAsync({
+                abi: erc20Abi,
+                address: USDC_ADDRESS,
+                functionName: 'approve',
+                args: [ portfolio, maxUint256 ],
+                chainId: baseSepolia.id,
+              });
+              console.log('[ui][strategy] wagmi approve sent');
+            } catch (e) {
+              console.error('[ui][strategy] wagmi approve failed', e);
+            }
+          }
+          // 3) deposit default amount (5 USDC)
+          try {
+            const userPortfolioAbi = [
+              { type: 'function', name: 'depositUsdc', stateMutability: 'nonpayable', inputs: [ { name: 'usdcIn', type: 'uint256' } ], outputs: [] },
+            ] as const;
+            const amountIn = parseUnits('5.0', 6);
+            await writeContractAsync({
+              abi: userPortfolioAbi,
+              address: portfolio,
+              functionName: 'depositUsdc',
+              args: [ amountIn ],
+              chainId: baseSepolia.id,
+            });
+            console.log('[ui][strategy] wagmi deposit sent');
+          } catch (e) {
+            console.error('[ui][strategy] wagmi deposit failed', e);
+          }
+        } else {
+          // Existing portfolio: call server allocate
+          console.log('[ui][strategy] existing portfolio, calling server allocate');
+          const allocResp = await fetch(`${SERVER_URL}/portfolio/allocate`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              userContract: portfolio,
+              bps: [usdcBps, ethBps],
+            }),
+          });
+          if (!allocResp.ok) {
+            const t = await allocResp.text();
+            console.error('[ui][strategy] allocation failed', t);
+          }
+        }
+      } catch (e) {
+        console.error('[ui][strategy] flow error', e);
+      }
+    })();
   };
 
   const handleCustomSelect = () => {
@@ -202,6 +368,9 @@ function InvestmentDashboard({ strategy, ethAllocation, defaultInvestment, onBac
   const [walletEth, setWalletEth] = useState("0");
   const [portfolioUsdc, setPortfolioUsdc] = useState("0");
   const [portfolioWeth, setPortfolioWeth] = useState("0");
+  const [portfolioAllocations, setPortfolioAllocations] = useState<Array<{ token: `0x${string}`; bps: number; decimals: number; priceFeed: `0x${string}`; lastEdited: bigint }>>([]);
+  const [portfolioValueUsdc, setPortfolioValueUsdc] = useState<string>("0");
+  const [isRefreshing, setIsRefreshing] = useState(false);
 
   const usdcAllocation = 100 - currentETHAllocation;
   const ethValue = (totalInvested * currentETHAllocation) / 100;
@@ -264,6 +433,12 @@ function InvestmentDashboard({ strategy, ethAllocation, defaultInvestment, onBac
     }, 1500);
   };
 
+  // Deterministic price increase button
+  const increaseEthPrice = () => {
+    const newPrice = ethPrice + 50; // increase by $50
+    setEthPrice(newPrice);
+  };
+
   const handleDeposit = () => {
     if (depositAmount) {
       setTotalInvested(prev => prev + parseFloat(depositAmount));
@@ -303,6 +478,68 @@ function InvestmentDashboard({ strategy, ethAllocation, defaultInvestment, onBac
         });
         const upAddr = (up as `0x${string}` | string) || "";
         setPortfolioAddress(upAddr);
+        // Read portfolio state if exists
+        if (upAddr && upAddr !== ZERO_ADDRESS) {
+          try {
+            const portfolioAbi = [
+              {
+                type: "function",
+                name: "getPortfolio",
+                stateMutability: "view",
+                inputs: [],
+                outputs: [
+                  {
+                    type: "tuple[]",
+                    components: [
+                      { name: "token", type: "address" },
+                      { name: "bps", type: "uint16" },
+                      { name: "decimals", type: "uint8" },
+                      { name: "priceFeed", type: "address" },
+                      { name: "lastEdited", type: "uint256" },
+                    ],
+                  },
+                ],
+              },
+              {
+                type: "function",
+                name: "calculatePortfolioValue",
+                stateMutability: "view",
+                inputs: [],
+                outputs: [{ name: "", type: "uint256" }],
+              },
+            ] as const;
+            const [allocs, totalVal] = await Promise.all([
+              publicClient.readContract({
+                abi: portfolioAbi,
+                address: upAddr as `0x${string}`,
+                functionName: "getPortfolio",
+                args: [],
+              }) as Promise<any[]>,
+              publicClient.readContract({
+                abi: portfolioAbi,
+                address: upAddr as `0x${string}`,
+                functionName: "calculatePortfolioValue",
+                args: [],
+              }) as Promise<bigint>,
+            ]);
+            const parsed = (allocs || []).map((a: any) => ({
+              token: a.token as `0x${string}`,
+              bps: Number(a.bps),
+              decimals: Number(a.decimals),
+              priceFeed: a.priceFeed as `0x${string}`,
+              lastEdited: BigInt(a.lastEdited),
+            }));
+            setPortfolioAllocations(parsed);
+            setPortfolioValueUsdc(formatUnits(totalVal || 0n, 6));
+          } catch (e) {
+            // Ignore if portfolio empty or call fails pre-allocation
+            setPortfolioAllocations([]);
+            setPortfolioValueUsdc("0");
+          }
+        } else {
+          setPortfolioAllocations([]);
+          setPortfolioValueUsdc("0");
+        }
         const erc20Abi = [
           { type: "function", name: "balanceOf", stateMutability: "view", inputs: [{ name: "", type: "address" }], outputs: [{ name: "", type: "uint256" }] },
         ] as const;
@@ -330,6 +567,8 @@ function InvestmentDashboard({ strategy, ethAllocation, defaultInvestment, onBac
     };
     fetchData();
   }, [publicClient, walletAddress, wagmiAddress, chainId]);
+
+  
 
   // Fetch wallet balances via server (CDP Platform balances)
   useEffect(() => {
@@ -441,6 +680,84 @@ function InvestmentDashboard({ strategy, ethAllocation, defaultInvestment, onBac
     setCurrentETHAllocation(ethAllocation);
   };
 
+  const refreshOnchain = async () => {
+    try {
+      setIsRefreshing(true);
+      const activeAddress: `0x${string}` | undefined = walletAddress ?? wagmiAddress;
+      if (!activeAddress || !portfolioAddress || portfolioAddress === ZERO_ADDRESS) return;
+      const SERVER_URL = process.env.NEXT_PUBLIC_SERVER_URL || "http://localhost:3007";
+      // 1) Read ERC20 balances via server check endpoint for portfolio address
+      if (USDC_ADDRESS) {
+        const r = await fetch(`${SERVER_URL}/portfolio/check`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ userContract: portfolioAddress, tokenAddress: USDC_ADDRESS }),
+        });
+        if (r.ok) {
+          const d = await r.json();
+          const raw = BigInt(d?.result?.balance || '0');
+          setPortfolioUsdc(raw.toString());
+        }
+      }
+      // 2) Refresh getPortfolio and value
+      if (publicClient) {
+        try {
+          const portfolioAbi = [
+            {
+              type: "function",
+              name: "getPortfolio",
+              stateMutability: "view",
+              inputs: [],
+              outputs: [
+                {
+                  type: "tuple[]",
+                  components: [
+                    { name: "token", type: "address" },
+                    { name: "bps", type: "uint16" },
+                    { name: "decimals", type: "uint8" },
+                    { name: "priceFeed", type: "address" },
+                    { name: "lastEdited", type: "uint256" },
+                  ],
+                },
+              ],
+            },
+            { type: "function", name: "calculatePortfolioValue", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "uint256" }] },
+          ] as const;
+          const [allocs, totalVal] = await Promise.all([
+            publicClient.readContract({ abi: portfolioAbi, address: portfolioAddress as `0x${string}`, functionName: "getPortfolio", args: [] }) as Promise<any[]>,
+            publicClient.readContract({ abi: portfolioAbi, address: portfolioAddress as `0x${string}`, functionName: "calculatePortfolioValue", args: [] }) as Promise<bigint>,
+          ]);
+          const parsed = (allocs || []).map((a: any) => ({ token: a.token as `0x${string}`, bps: Number(a.bps), decimals: Number(a.decimals), priceFeed: a.priceFeed as `0x${string}`, lastEdited: BigInt(a.lastEdited) }));
+          setPortfolioAllocations(parsed);
+          setPortfolioValueUsdc(formatUnits(totalVal || 0n, 6));
+        } catch {}
+      }
+      // 3) Refresh wallet balances via server balances endpoint
+      try {
+        const resp = await fetch(`http://localhost:3007/balances?chain=base-sepolia&address=${activeAddress}`);
+        if (resp.ok) {
+          const data = await resp.json();
+          const balances = data?.result?.balances || [];
+          let ethRaw = 0n;
+          let usdcRaw = 0n;
+          for (const b of balances) {
+            const symbol = b?.token?.symbol;
+            const amountStr = b?.amount?.amount;
+            if (typeof amountStr === 'string') {
+              const raw = BigInt(amountStr);
+              if (symbol === 'ETH') ethRaw = raw;
+              if (symbol === 'USDC') usdcRaw = raw;
+            }
+          }
+          setWalletEth(ethRaw.toString());
+          setWalletUsdc(usdcRaw.toString());
+        }
+      } catch {}
+    } finally {
+      setIsRefreshing(false);
+    }
+  };
+
   const needsRebalancing = Math.abs(currentETHAllocation - ethAllocation) > 2;
 
   const handleBuyUSDC = () => {
@@ -487,6 +804,13 @@ function InvestmentDashboard({ strategy, ethAllocation, defaultInvestment, onBac
                     title="Update ETH Price"
                   >
                     <div className={`w-6 h-6 border-2 border-gray-400 border-t-gray-700 rounded-full ${isUpdatingPrice ? 'animate-spin' : ''}`}></div>
+                  </button>
+                  <button
+                    onClick={increaseEthPrice}
+                    className="px-3 py-2 bg-gray-100 hover:bg-gray-200 rounded-lg text-sm font-medium text-gray-900 transition-colors"
+                    title="Increase ETH Price by $50"
+                  >
+                    Increase ETH Price
                   </button>
                 </div>
               </div>
@@ -629,6 +953,29 @@ function InvestmentDashboard({ strategy, ethAllocation, defaultInvestment, onBac
                 </div>
               </div>
 
+              {/* On-chain Portfolio Allocation (live) */}
+              <div className="mt-6 bg-white border border-gray-200 rounded-xl p-4">
+                <div className="flex items-center justify-between">
+                  <div className="text-sm font-semibold text-gray-900">On-chain Portfolio</div>
+                  <div className="text-xs text-gray-500">Total (USDC): {Number(portfolioValueUsdc || '0').toLocaleString()}</div>
+                </div>
+                {portfolioAllocations.length === 0 ? (
+                  <div className="text-sm text-gray-500 mt-2">No allocation set yet.</div>
+                ) : (
+                  <div className="mt-3 space-y-2">
+                    {portfolioAllocations.map((a, idx) => (
+                      <div key={`${a.token}-${idx}`} className="flex items-center justify-between text-sm">
+                        <div className="truncate">
+                          <span className="font-medium text-gray-800">{a.bps / 100}%</span>
+                          <span className="text-gray-500 ml-2">{a.token}</span>
+                        </div>
+                        <span className="text-gray-500">oracle: {a.priceFeed}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
               {/* Rebalancing Alert */}
               {needsRebalancing && (
                 <div className="mt-6 bg-amber-50 border border-amber-200 rounded-xl p-4">
@@ -670,7 +1017,7 @@ function InvestmentDashboard({ strategy, ethAllocation, defaultInvestment, onBac
                 </div>
 
                 <div className="grid grid-cols-2 gap-2">
-                  {[100, 500, 1000, 2500].map(amount => (
+                  {[1, 5, 10, 25].map(amount => (
                     <button
                       key={amount}
                       onClick={() => setDepositAmount(amount.toString())}
@@ -704,6 +1051,13 @@ function InvestmentDashboard({ strategy, ethAllocation, defaultInvestment, onBac
                   className="w-full bg-indigo-600 text-white py-3 px-4 rounded-xl font-medium hover:bg-indigo-700 transition-colors disabled:bg-gray-300 disabled:cursor-not-allowed"
                 >
                   {isPending || isConfirming ? "Rebalancing…" : "Rebalance to Target"}
+                </button>
+                <button
+                  onClick={refreshOnchain}
+                  disabled={isRefreshing}
+                  className="w-full bg-gray-100 text-gray-900 py-3 px-4 rounded-xl font-medium hover:bg-gray-200 transition-colors disabled:bg-gray-200 disabled:cursor-not-allowed"
+                >
+                  {isRefreshing ? 'Refreshing…' : 'Refresh On-chain Balances'}
                 </button>
                 {error && (
                   <div className="text-sm text-red-600">{error.message}</div>

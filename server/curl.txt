@@ -1,0 +1,30 @@
+cdpcurl -X POST 'https://api.developer.coinbase.com/onramp/v1/buy/quote' \
+  -H 'Authorization: Bearer YOUR_JWT_TOKEN_HERE' \
+  -d '{"purchase_currency": "BTC", "payment_amount": "100.00", "payment_currency": "USD", "payment_method": "CARD", "country": "US", "subdivision": "NY", "destination_address": "DESTINATION_ADDRESS_HERE"}'
+
+# Test the /hook endpoint
+curl -X POST 'http://localhost:3007/hook' \
+  -H 'Content-Type: application/json' \
+  -d '{"test": "data", "event": "payment_completed", "amount": "100.00"}'
+
+
+cdpcurl -k ~/Downloads/cdp_api_key.json \
+  -X POST \
+  -H "Content-Type: application/json" \
+  -d '{
+    "description": "My Webhook Subscription",
+    "eventTypes": [
+      "onramp.transaction.created",
+      "onramp.transaction.success"
+    ],
+    "target": {
+      "url": "https://026c63defa3c.ngrok-free.app/hook",
+      "method": "POST"
+    },
+    "labelKey": "project",
+    "labelValue": "bdd4fdee-3ed6-48c5-b600-253b5923164d",
+    "isEnabled": true
+  }' \
+  'https://api.cdp.coinbase.com/platform/v2/data/webhooks/subscriptions'
+
+  first to implement onramp webhook feature - launched privately on friday and is not even in the docs

@@ -1,0 +1,1 @@
+cast call $USDC_ADDRESS "balanceOf(address)(uint256)" $USER_CONTRACT --rpc-url $BASE_SEPOLIA_RPC_URL
