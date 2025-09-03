@@ -355,7 +355,7 @@ function InvestmentDashboard({ strategy, ethAllocation, defaultInvestment, onBac
 }) {
   const [depositAmount, setDepositAmount] = useState(defaultInvestment.toString());
   const [totalInvested, setTotalInvested] = useState(defaultInvestment);
-  const [ethPrice, setEthPrice] = useState(3200);
+  const [ethPrice, setEthPrice] = useState(4381);
   const [isUpdatingPrice, setIsUpdatingPrice] = useState(false);
   const [currentETHAllocation, setCurrentETHAllocation] = useState(ethAllocation);
   const [isLoaded, setIsLoaded] = useState(false);
@@ -371,14 +371,40 @@ function InvestmentDashboard({ strategy, ethAllocation, defaultInvestment, onBac
   const [portfolioAllocations, setPortfolioAllocations] = useState<Array<{ token: `0x${string}`; bps: number; decimals: number; priceFeed: `0x${string}`; lastEdited: bigint }>>([]);
   const [portfolioValueUsdc, setPortfolioValueUsdc] = useState<string>("0");
   const [isRefreshing, setIsRefreshing] = useState(false);
-
+    const [ethValueState, setEthValueState] = useState(0);
+  const [usdcValueState, setUsdcValueState] = useState(0);
+  
   const usdcAllocation = 100 - currentETHAllocation;
-  const ethValue = (totalInvested * currentETHAllocation) / 100;
+  
+  // Calculate ETH value based on current ETH price and allocation
+  // If ETH price increases, ETH value should increase proportionally
+  const ethAmount = (totalInvested * currentETHAllocation) / 100; // Amount in USD terms
+  const ethValue = ethAmount * (ethPrice / 4381); // Adjust for current ETH price vs base price
+  
+  // USDC value remains stable (pegged to USD)
   const usdcValue = (totalInvested * usdcAllocation) / 100;
+  
+  // Use state values if they exist (for rebalancing), otherwise use calculated values
+  const finalEthValue = ethValueState > 0 ? ethValueState : ethValue;
+  const finalUsdcValue = usdcValueState > 0 ? usdcValueState : usdcValue;
+  
+  // Calculate dynamic allocation percentages based on current values
+  const totalPortfolioValue = finalEthValue + finalUsdcValue;
+  const dynamicEthPercentage = totalPortfolioValue > 0 ? (finalEthValue / totalPortfolioValue) * 100 : currentETHAllocation;
+  const dynamicUsdcPercentage = totalPortfolioValue > 0 ? (finalUsdcValue / totalPortfolioValue) * 100 : usdcAllocation;
+  
   const walletUsdcFormatted = formatUnits(BigInt(walletUsdc || "0"), 6);
   const walletEthFormatted = formatUnits(BigInt(walletEth || "0"), 18);
   const portfolioUsdcFormatted = formatUnits(BigInt(portfolioUsdc || "0"), 6);
   const portfolioWethFormatted = formatUnits(BigInt(portfolioWeth || "0"), 18);
+  
+  // Initialize state values when component mounts or when calculated values change
+  useEffect(() => {
+    if (ethValueState === 0 && usdcValueState === 0) {
+      setEthValueState(ethValue);
+      setUsdcValueState(usdcValue);
+    }
+  }, [ethValue, usdcValue, ethValueState, usdcValueState]);
 
   // Animate pie chart on load
   useEffect(() => {
@@ -429,19 +455,29 @@ function InvestmentDashboard({ strategy, ethAllocation, defaultInvestment, onBac
       const newETHAllocation = ethAllocation * (1 + priceChangePercent * 0.5); // Dampened effect
       setCurrentETHAllocation(Math.max(20, Math.min(80, newETHAllocation)));
       
+      // Reset rebalancing state when price changes
+      setEthValueState(0);
+      setUsdcValueState(0);
+      
       setIsUpdatingPrice(false);
     }, 1500);
   };
 
   // Deterministic price increase button
   const increaseEthPrice = () => {
-    const newPrice = ethPrice + 50; // increase by $50
+    const newPrice = ethPrice + 200; // increase by $50
     setEthPrice(newPrice);
+    // Reset rebalancing state when price changes
+    setEthValueState(0);
+    setUsdcValueState(0);
   };
 
   const handleDeposit = () => {
     if (depositAmount) {
       setTotalInvested(prev => prev + parseFloat(depositAmount));
+      // Reset rebalancing state when new funds are added
+      setEthValueState(0);
+      setUsdcValueState(0);
       // Don't clear depositAmount so user can deposit again
     }
   };
@@ -449,6 +485,9 @@ function InvestmentDashboard({ strategy, ethAllocation, defaultInvestment, onBac
   const handleWithdraw = () => {
     if (depositAmount && parseFloat(depositAmount) <= totalInvested) {
       setTotalInvested(prev => Math.max(0, prev - parseFloat(depositAmount)));
+      // Reset rebalancing state when funds are withdrawn
+      setEthValueState(0);
+      setUsdcValueState(0);
       // Don't clear depositAmount so user can withdraw again
     }
   };
@@ -677,7 +716,29 @@ function InvestmentDashboard({ strategy, ethAllocation, defaultInvestment, onBac
   };
 
   const rebalance = () => {
+    // Calculate the total current portfolio value
+    const totalCurrentValue = finalEthValue + finalUsdcValue;
+    
+    // For rebalancing, we want to return to the target allocation from the strategy
+    // This simulates selling/buying assets to match your chosen strategy
+    const targetEthValue = (totalCurrentValue * ethAllocation) / 100;
+    const targetUsdcValue = (totalCurrentValue * (100 - ethAllocation)) / 100;
+    
+    // Update the individual values to reflect the rebalancing
+    setEthValueState(targetEthValue);
+    setUsdcValueState(targetUsdcValue);
+    
+    // Update the current allocation to reflect the target strategy
     setCurrentETHAllocation(ethAllocation);
+    
+    console.log('Portfolio rebalanced to target strategy:', {
+      totalValue: totalCurrentValue,
+      oldEthValue: finalEthValue,
+      oldUsdcValue: finalUsdcValue,
+      targetEthValue: targetEthValue,
+      targetUsdcValue: targetUsdcValue,
+      targetAllocation: `${ethAllocation}/${100 - ethAllocation}`
+    });
   };
 
   const refreshOnchain = async () => {
@@ -758,15 +819,15 @@ function InvestmentDashboard({ strategy, ethAllocation, defaultInvestment, onBac
     }
   };
 
-  const needsRebalancing = Math.abs(currentETHAllocation - ethAllocation) > 2;
+  const needsRebalancing = Math.abs(dynamicEthPercentage - ethAllocation) > 2;
 
   const handleBuyUSDC = () => {
     if (!depositAmount) return;
     onBuyUSDC?.(depositAmount);
   };
 
-  // Pie chart calculation with animation
-  const ethAngle = isLoaded ? (currentETHAllocation / 100) * 360 : 0;
+  // Pie chart calculation with animation - now uses dynamic percentages
+  const ethAngle = isLoaded ? (dynamicEthPercentage / 100) * 360 : 0;
   const usdcAngle = isLoaded ? 360 - ethAngle : 0;
 
   return (
@@ -793,10 +854,6 @@ function InvestmentDashboard({ strategy, ethAllocation, defaultInvestment, onBac
               <div className="flex items-center justify-between mb-6">
                 <h2 className="text-xl font-semibold text-gray-900">Portfolio Allocation</h2>
                 <div className="flex items-center gap-4">
-                  <div className="text-right">
-                    <div className="text-2xl font-bold text-gray-900">${totalInvested.toLocaleString()}</div>
-                    <div className="text-sm text-gray-600">Total Value</div>
-                  </div>
                   <button
                     onClick={updatePrice}
                     disabled={isUpdatingPrice}
@@ -805,13 +862,19 @@ function InvestmentDashboard({ strategy, ethAllocation, defaultInvestment, onBac
                   >
                     <div className={`w-6 h-6 border-2 border-gray-400 border-t-gray-700 rounded-full ${isUpdatingPrice ? 'animate-spin' : ''}`}></div>
                   </button>
-                  <button
-                    onClick={increaseEthPrice}
-                    className="px-3 py-2 bg-gray-100 hover:bg-gray-200 rounded-lg text-sm font-medium text-gray-900 transition-colors"
-                    title="Increase ETH Price by $50"
-                  >
-                    Increase ETH Price
-                  </button>
+                  <div className="flex items-center gap-3">
+                    <div className="text-center px-3 py-2 bg-blue-50 rounded-lg border border-blue-200">
+                      <div className="text-sm font-medium text-blue-900">ETH Price</div>
+                      <div className="text-lg font-bold text-blue-700">${ethPrice.toLocaleString()}</div>
+                    </div>
+                    <button
+                      onClick={increaseEthPrice}
+                      className="px-3 py-2 bg-gray-100 hover:bg-gray-200 rounded-lg text-sm font-medium text-gray-900 transition-colors"
+                      title="Increase ETH Price by $50"
+                    >
+                      Increase ETH Price
+                    </button>
+                  </div>
                 </div>
               </div>
 
@@ -924,12 +987,12 @@ function InvestmentDashboard({ strategy, ethAllocation, defaultInvestment, onBac
                     
                     {/* Center content with enhanced styling */}
                     <div className="absolute inset-0 flex items-center justify-center">
-                      <div className="text-center bg-white/80 backdrop-blur-sm rounded-full w-32 h-32 flex items-center justify-center shadow-lg border border-gray-200/50">
-                        <div>
-                          <div className="text-2xl font-bold text-gray-900 tracking-tight">${ethPrice.toLocaleString()}</div>
-                          <div className="text-xs text-gray-500 font-medium tracking-wide">ETH PRICE</div>
-                        </div>
+                                          <div className="text-center bg-white/80 backdrop-blur-sm rounded-full w-32 h-32 flex items-center justify-center shadow-lg border border-gray-200/50">
+                      <div>
+                        <div className="text-2xl font-bold text-gray-900 tracking-tight">${totalPortfolioValue.toLocaleString()}</div>
+                        <div className="text-xs text-gray-500 font-medium tracking-wide">PORTFOLIO VALUE</div>
                       </div>
+                    </div>
                     </div>
                   </div>
                 </div>
@@ -941,14 +1004,14 @@ function InvestmentDashboard({ strategy, ethAllocation, defaultInvestment, onBac
                   <div className="w-6 h-6 bg-gradient-to-br from-emerald-500 to-emerald-600 rounded-full shadow-sm"></div>
                   <div>
                     <div className="font-semibold text-gray-900">USDC</div>
-                    <div className="text-sm text-gray-600">{usdcAllocation.toFixed(1)}% • ${usdcValue.toLocaleString()}</div>
+                    <div className="text-sm text-gray-600">{dynamicUsdcPercentage.toFixed(1)}% • ${finalUsdcValue.toLocaleString()}</div>
                   </div>
                 </div>
                 <div className="flex items-center gap-4 p-4 bg-gradient-to-r from-indigo-50 to-indigo-100 rounded-xl border border-indigo-200/50">
                   <div className="w-6 h-6 bg-gradient-to-br from-indigo-500 to-indigo-600 rounded-full shadow-sm"></div>
                   <div>
                     <div className="font-semibold text-gray-900">Ethereum</div>
-                    <div className="text-sm text-gray-600">{currentETHAllocation.toFixed(1)}% • ${ethValue.toLocaleString()}</div>
+                    <div className="text-sm text-gray-600">{dynamicEthPercentage.toFixed(1)}% • ${finalEthValue.toLocaleString()}</div>
                   </div>
                 </div>
               </div>
@@ -982,16 +1045,16 @@ function InvestmentDashboard({ strategy, ethAllocation, defaultInvestment, onBac
                   <div className="flex items-center justify-between">
                     <div>
                       <div className="font-medium text-amber-800">Portfolio Drift Detected</div>
-                      <div className="text-sm text-amber-700">
-                        Your allocation has shifted {Math.abs(currentETHAllocation - ethAllocation).toFixed(1)}% from target
-                      </div>
-                    </div>
-                    <button
-                      onClick={rebalance}
-                      className="bg-amber-600 text-white px-4 py-2 rounded-lg font-medium hover:bg-amber-700 transition-colors"
-                    >
-                      Rebalance
-                    </button>
+                                        <div className="text-sm text-amber-700">
+                    Your allocation has shifted {Math.abs(dynamicEthPercentage - ethAllocation).toFixed(1)}% from target
+                  </div>
+                </div>
+                <button
+                  onClick={rebalance}
+                  className="bg-amber-600 text-white px-4 py-2 rounded-lg font-medium hover:bg-amber-700 transition-colors"
+                >
+                  Rebalance to {ethAllocation}/{100 - ethAllocation}
+                </button>
                   </div>
                 </div>
               )}
@@ -1099,7 +1162,7 @@ function InvestmentDashboard({ strategy, ethAllocation, defaultInvestment, onBac
                 <div className="flex justify-between">
                   <span className="text-gray-600">Current ETH</span>
                   <span className={`font-medium ${needsRebalancing ? 'text-amber-600' : 'text-gray-900'}`}>
-                    {currentETHAllocation.toFixed(1)}%
+                    {dynamicEthPercentage.toFixed(1)}%
                   </span>
                 </div>
                 <div className="flex justify-between">
