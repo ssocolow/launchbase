@@ -15,6 +15,7 @@ A Node.js Express server that generates and responds with a JWT token when acces
 ```bash
 npm install
 ```
+Also install cdpcurl on your system.
 
 2. Configure your JWT settings in `server.js`:
    - Update `key_name` with your actual key ID
