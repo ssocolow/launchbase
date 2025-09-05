@@ -2,4 +2,6 @@
 Onboarding noobs to risk-conscious crypto investing
 
 ## Demo video
-![demo video](demo.mp4)
+
+https://github.com/user-attachments/assets/624889c8-5ae6-4bfc-952c-ea261809a307
+
